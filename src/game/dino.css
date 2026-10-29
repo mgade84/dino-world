@@ -50,7 +50,8 @@
 
 .dn-roar,
 .dn-jump,
-.dn-change {
+.dn-change,
+.dn-map {
   position: absolute;
   bottom: calc(var(--sab) + 20px);
   display: grid;
@@ -90,6 +91,14 @@
   50% { transform: scale(1.1); }
 }
 
+.dn-map {
+  left: calc(var(--sal) + 20px);
+  bottom: calc(var(--sab) + 100px);
+  width: 64px;
+  height: 64px;
+  font-size: 32px;
+}
+
 .dn-change {
   left: calc(var(--sal) + 20px);
   width: 64px;
@@ -99,7 +108,8 @@
 
 .dn-roar:active,
 .dn-jump:active,
-.dn-change:active {
+.dn-change:active,
+.dn-map:active {
   transform: translateY(4px);
   box-shadow: 0 2px 0 rgba(0, 0, 0, 0.2);
 }
@@ -221,4 +231,17 @@
   white-space: nowrap;
   font: 900 clamp(14px, 1.7vw, 22px) var(--font);
   color: var(--ink);
+}
+
+/* World picker: two big cards. */
+.dn-worlds .dn-card {
+  flex: 0 1 calc((100% - 16px) / 2);
+  max-width: 340px;
+  padding-block: 18px 20px;
+}
+
+.dn-worlds .dn-card .dn-world-art {
+  font-size: clamp(56px, 10vw, 104px);
+  line-height: 1.25;
+  overflow: visible;
 }

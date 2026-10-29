@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { DinoSpec } from './species';
 
-export { DINOS, type DinoSpec } from './species';
+export { DINOS, SEA_DINOS, type DinoSpec } from './species';
 
 /** The moving parts of a dinosaur model, animated by animate(). */
 export interface Rig {
@@ -293,8 +293,101 @@ function pteranodon(c: DinoSpec['colors']): Rig {
   return r;
 }
 
+/** A paddle flipper hinged at the shoulder or hip, reaching out sideways and a little down. */
+function flipper(parent: THREE.Object3D, side: number, z: number, size: number, color: string) {
+  const pivot = group(parent, [side * 0.9, 0, z], [0, 0, side * -0.35]);
+  part(pivot, GEO.sphere, color, [size, 0.08, size * 0.42], [side * size * 0.85, 0, -size * 0.25], [0, side * 0.35, 0]);
+  return pivot;
+}
+
+/** Big sea lizard: crocodile head full of teeth, four flippers, and a tail ending in a fin. */
+function mosasaurus(c: DinoSpec['colors']): Rig {
+  const root = new THREE.Group();
+  const body = group(root);
+  part(body, GEO.sphere, c.body, [1.1, 0.95, 2.6]);
+  part(body, GEO.sphere, c.belly, [0.95, 0.7, 2.3], [0, -0.28, 0.1]);
+  for (let k = 0; k < 4; k++) part(body, GEO.sphere, c.accent, [0.55 - k * 0.06, 0.1, 0.35], [0, 0.88 - k * 0.04, 1.4 - k * 0.9]);
+  const neck = group(body, [0, 0.1, 2.25]);
+  part(neck, GEO.sphere, c.body, [0.75, 0.7, 0.7], [0, 0, 0.2]);
+  const head = group(neck, [0, 0.05, 0.5]);
+  part(head, GEO.sphere, c.body, [0.68, 0.52, 1.15], [0, 0.08, 0.8]);
+  part(head, GEO.sphere, c.body, [0.42, 0.32, 0.95], [0, 0, 1.8]);
+  for (const side of [-1, 1]) for (const z of [1.2, 1.55, 1.9, 2.25]) {
+    part(head, GEO.cone, '#ffffff', [0.06, 0.18, 0.06], [side * (0.36 - (z - 1.2) * 0.12), -0.3, z], [Math.PI, 0, 0]);
+  }
+  const jaw = group(head, [0, -0.32, 0.5]);
+  part(jaw, GEO.sphere, c.belly, [0.4, 0.17, 1.4], [0, 0, 1.0]);
+  eyes(head, 0.48, 0.32, 0.75, 0.2);
+  const t = tailChain(body, [0, 0, -2.3], 5, 1.0, 0.8, 0.2, c.body);
+  part(t.tip, GEO.sphere, c.accent, [0.12, 0.9, 0.55], [0, -0.35, -0.2], [0.5, 0, 0]);
+  part(t.tip, GEO.sphere, c.accent, [0.1, 0.5, 0.4], [0, 0.3, -0.15], [-0.6, 0, 0]);
+  const r = rig(root, body, head, { jaw, tail: t.segs, neck: [neck], radius: 2.2, stepRate: 3, bob: 0.05 });
+  r.legs = ([[-1, 1.2, 0], [1, 1.2, Math.PI], [-1, -1.2, Math.PI], [1, -1.2, 0]] as const).map(([side, z, off]) => ({
+    pivot: flipper(body, side, z, z > 0 ? 1.3 : 1.0, c.accent), offset: off, amp: 0.5,
+  }));
+  return r;
+}
+
+/** Wide turtle-like body, four big flippers and a long neck that pokes out of the water. */
+function plesiosaur(c: DinoSpec['colors']): Rig {
+  const root = new THREE.Group();
+  const body = group(root);
+  part(body, GEO.sphere, c.body, [1.25, 0.72, 1.8]);
+  part(body, GEO.sphere, c.belly, [1.05, 0.5, 1.55], [0, -0.22, 0]);
+  for (let k = 0; k < 5; k++) part(body, GEO.sphere, c.accent, [0.16, 0.08, 0.16], [(k % 2 ? 0.4 : -0.4) * (k / 4), 0.68, 0.9 - k * 0.45]);
+  const neck: THREE.Object3D[] = [];
+  let at: THREE.Object3D = group(body, [0, 0.35, 1.55], [-0.55, 0, 0]);
+  for (let k = 0; k < 6; k++) {
+    const rr = 0.36 - k * 0.025;
+    part(at, GEO.sphere, c.body, [rr, rr, 0.62], [0, 0, 0.45]);
+    neck.push(at);
+    at = group(at, [0, 0, 0.8], [0.08, 0, 0]);
+  }
+  const head = group(at, [0, 0, 0.2], [0.35, 0, 0]);
+  part(head, GEO.sphere, c.body, [0.33, 0.28, 0.48], [0, 0, 0.2]);
+  part(head, GEO.sphere, c.body, [0.2, 0.16, 0.38], [0, -0.04, 0.6]);
+  for (const side of [-1, 1]) for (const z of [0.45, 0.65]) part(head, GEO.cone, '#ffffff', [0.035, 0.1, 0.035], [side * 0.14, -0.17, z], [Math.PI, 0, 0]);
+  const jaw = group(head, [0, -0.15, 0.25]);
+  part(jaw, GEO.sphere, c.belly, [0.17, 0.08, 0.38], [0, 0, 0.3]);
+  eyes(head, 0.24, 0.12, 0.25, 0.13);
+  const t = tailChain(body, [0, 0, -1.6], 3, 0.6, 0.45, 0.12, c.body);
+  const r = rig(root, body, head, { jaw, tail: t.segs, neck, radius: 2.0, stepRate: 3, bob: 0.05 });
+  r.legs = ([[-1, 0.9, 0], [1, 0.9, Math.PI], [-1, -0.9, Math.PI], [1, -0.9, 0]] as const).map(([side, z, off]) => ({
+    pivot: flipper(body, side, z, 1.6, c.body), offset: off, amp: 0.55,
+  }));
+  return r;
+}
+
+/** Dolphin-shaped sea reptile: long toothy snout, huge eyes, a dorsal fin and a crescent tail. */
+function ichthyosaur(c: DinoSpec['colors']): Rig {
+  const root = new THREE.Group();
+  const body = group(root);
+  part(body, GEO.sphere, c.body, [0.85, 0.9, 2.2]);
+  part(body, GEO.sphere, c.belly, [0.7, 0.62, 1.9], [0, -0.28, 0.1]);
+  part(body, GEO.cone, c.accent, [0.07, 1.0, 0.6], [0, 1.0, -0.1], [-0.45, 0, 0]);
+  const neck = group(body, [0, 0.05, 1.95]);
+  const head = group(neck);
+  part(head, GEO.sphere, c.body, [0.55, 0.5, 0.7], [0, 0.02, 0.3]);
+  part(head, GEO.sphere, c.body, [0.16, 0.14, 1.1], [0, -0.05, 1.3]);
+  for (const side of [-1, 1]) for (const z of [0.9, 1.2, 1.5, 1.8]) {
+    part(head, GEO.cone, '#ffffff', [0.03, 0.09, 0.03], [side * 0.1, -0.16, z], [Math.PI, 0, 0]);
+  }
+  const jaw = group(head, [0, -0.16, 0.5]);
+  part(jaw, GEO.sphere, c.belly, [0.13, 0.07, 1.05], [0, 0, 0.8]);
+  eyes(head, 0.4, 0.15, 0.42, 0.25);
+  const t = tailChain(body, [0, 0, -2.0], 3, 0.8, 0.55, 0.18, c.body);
+  part(t.tip, GEO.sphere, c.accent, [0.07, 0.95, 0.42], [0, 0.55, -0.15], [-0.65, 0, 0]);
+  part(t.tip, GEO.sphere, c.accent, [0.07, 0.85, 0.4], [0, -0.5, -0.12], [0.65, 0, 0]);
+  const r = rig(root, body, head, { jaw, tail: t.segs, neck: [neck], radius: 1.8, stepRate: 3.5, bob: 0.05 });
+  r.legs = ([[-1, 0.9, 0], [1, 0.9, Math.PI], [-1, -1.0, Math.PI], [1, -1.0, 0]] as const).map(([side, z, off]) => ({
+    pivot: flipper(body, side * 0.95, z, z > 0 ? 1.0 : 0.6, c.accent), offset: off, amp: 0.45,
+  }));
+  return r;
+}
+
 const BUILD: Record<DinoSpec['id'], (c: DinoSpec['colors']) => Rig> = {
   trex, tri: triceratops, stego: stegosaurus, brachio: brachiosaurus, spino: spinoraptor, ptera: pteranodon,
+  mosa: mosasaurus, plesio: plesiosaur, ichthy: ichthyosaur,
 };
 
 /** Builds a dinosaur facing +z, standing on y = 0. `colors` overrides the species' own. */

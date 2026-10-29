@@ -34,7 +34,7 @@ const turnToward = (from: number, to: number, max: number) => {
   return from + THREE.MathUtils.clamp(d, -max, max);
 };
 
-export function runDino(ctx: GameContext): () => void {
+export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
   const root = ctx.area;
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
@@ -75,6 +75,7 @@ export function runDino(ctx: GameContext): () => void {
       <span aria-label="${S().people}">🏃 <b class="dn-people">0</b> / ${TARGETS}</span>
       <span aria-label="${S().freedLabel}">🦕 <b class="dn-freed">0</b> / ${CAGE_SPOTS.length}</span>
     </div>
+    <button class="dn-map" aria-label="${S().map}">🗺️</button>
     <button class="dn-change" aria-label="${S().change}">🔄</button>
     <button class="dn-jump" aria-label="${S().jump}"><span>⬆️</span></button>
     <button class="dn-roar" aria-label="${S().roar}"><span>🦖</span></button>
@@ -550,6 +551,10 @@ export function runDino(ctx: GameContext): () => void {
   hud.querySelector('.dn-change')!.addEventListener('click', () => {
     sfx.tap();
     showPicker();
+  });
+  hud.querySelector('.dn-map')!.addEventListener('click', () => {
+    sfx.tap();
+    opts.onMap();
   });
 
   // ---- Simulation ----

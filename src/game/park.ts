@@ -369,6 +369,7 @@ export function createPerson(rand: () => number): Person {
   const alert = new THREE.Sprite(alertMaterial());
   owned.push(alert.material);
   alert.scale.setScalar(1.1);
+  alert.renderOrder = 10; // drawn after the see-through sea surface, so it stays bright red
   alert.position.y = 4;
   alert.visible = false;
   g.add(alert);
@@ -389,7 +390,7 @@ export function posePerson(p: Person, dt: number, t: number, speed: number) {
     // Gone from view after a few seconds of running away.
     if (p.t > 4.5) {
       const s = Math.max(0, 1 - (p.t - 4.5) * 2);
-      p.group.scale.setScalar(s);
+      p.group.scale.setScalar(s * (p.group.userData.scale ?? 1));
       if (s <= 0) {
         p.state = 'gone';
         p.group.visible = false;
@@ -411,6 +412,77 @@ export function scare(p: Person): boolean {
   p.t = 0;
   p.alert.visible = true;
   return true;
+}
+
+// ===================== Ocean: fish and tourist boats =====================
+
+export const FISH_COLORS: [string, string][] = [
+  ['#ff9f1c', '#ffffff'], ['#ffd166', '#3d8bd6'], ['#4cc9f0', '#ffd166'], ['#ff5d8f', '#ffffff'], ['#80ed99', '#2f2f2f'], ['#b388ff', '#ffd166'],
+];
+
+export interface Fish {
+  group: THREE.Group;
+  tail: THREE.Object3D;
+  home: THREE.Vector3;
+  radius: number;
+  angle: number;
+  speed: number;
+  eaten: number;
+}
+
+/** A plump, bright fish about 2.5 long, facing +z. */
+export function createFish(body: string, stripe: string): Fish {
+  const g = new THREE.Group();
+  const inner = group(g);
+  inner.scale.setScalar(1.25);
+  part(inner, GEO.sphere, mat(body), [0.5, 0.62, 1.0]);
+  part(inner, GEO.sphere, mat(stripe), [0.52, 0.64, 0.18], [0, 0, 0.15]);
+  part(inner, GEO.sphere, mat(body), [0.05, 0.4, 0.45], [0, 0.6, -0.1], [0.4, 0, 0]);
+  const tail = group(inner, [0, 0, -0.85]);
+  part(tail, GEO.sphere, mat(stripe), [0.06, 0.55, 0.45], [0, 0, -0.35]);
+  for (const side of [-1, 1]) {
+    part(inner, GEO.sphere, mat('#ffffff'), [0.16, 0.16, 0.16], [side * 0.36, 0.18, 0.6]);
+    part(inner, GEO.sphere, mat('#1b1b1b'), [0.09, 0.09, 0.09], [side * 0.45, 0.18, 0.66]);
+  }
+  return { group: g, tail, home: new THREE.Vector3(), radius: 6, angle: 0, speed: 0.5, eaten: 0 };
+}
+
+export interface Boat {
+  group: THREE.Group;
+  people: Person[];
+  home: THREE.Vector3;
+  radius: number;
+  angle: number;
+  heading: number;
+  state: 'cruise' | 'flee' | 'gone';
+  t: number;
+  vel: THREE.Vector3;
+}
+
+const BOAT_COLORS = ['#e85d4a', '#3d8bd6', '#f2c14e', '#38b000', '#ff8fb1'];
+
+/** A little open motorboat with two tourists on board, facing +z, waterline at y = 0. */
+export function createBoat(rand: () => number, i: number): Boat {
+  const g = new THREE.Group();
+  const white = mat('#f7f7f2');
+  const trim = mat(BOAT_COLORS[i % BOAT_COLORS.length]);
+  part(g, GEO.box, white, [2.6, 1.0, 5.2], [0, 0.25, -0.3]);
+  part(g, GEO.box, white, [1.84, 1.0, 1.84], [0, 0.25, 2.3], [0, Math.PI / 4, 0]);
+  part(g, GEO.box, trim, [2.64, 0.25, 5.25], [0, 0.45, -0.3]);
+  part(g, GEO.box, mat('#c9a77a'), [2.3, 0.1, 4.6], [0, 0.72, -0.4]);
+  part(g, GEO.box, glassMat, [2.0, 0.6, 0.06], [0, 1.15, 1.1], [-0.35, 0, 0]);
+  part(g, GEO.box, mat('#2f2f2f'), [0.6, 1.0, 0.6], [0, 0.8, -3.1]);
+  for (const z of [-0.4, -1.8]) part(g, GEO.box, trim, [2.0, 0.35, 0.5], [0, 0.95, z]);
+  const people = [-0.55, 0.55].map((x, k) => {
+    const pp = createPerson(rand);
+    pp.group.scale.setScalar(0.72);
+    pp.group.userData.scale = 0.72;
+    pp.group.position.set(x, 0.75, -0.6 - k * 1.2);
+    pp.heading = (rand() - 0.5) * 2;
+    g.add(pp.group);
+    return pp;
+  });
+  return { group: g, people, home: new THREE.Vector3(), radius: 18, angle: 0, heading: 0, state: 'cruise', t: 0, vel: new THREE.Vector3() };
 }
 
 export function disposePark() {
