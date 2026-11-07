@@ -1,8 +1,6 @@
 import './style.css';
 import { dino } from './game';
-
-const games = [dino];
-import { mountMenu } from './menu';
+import { mountSplash } from './splash';
 import { mountSettings } from './settings';
 import { mountGame } from './shell';
 import { unlockAudio } from './engine/audio';
@@ -26,11 +24,11 @@ function route() {
   unmount?.();
   unmount = null;
   const id = location.hash.replace(/^#\/?/, '');
-  const def = games.find((g) => g.id === id);
   const home = () => (location.hash = '#/');
+  const go = (to: string) => () => (location.hash = '#/' + to);
   if (id === 'settings') unmount = mountSettings(app, home, route);
-  else if (def) unmount = mountGame(app, def, home);
-  else unmount = mountMenu(app, games, (g) => (location.hash = '#/' + g.id), () => (location.hash = '#/settings'));
+  else if (id === 'story' || id === 'rampage') unmount = mountGame(app, dino, id, home);
+  else unmount = mountSplash(app, dino, { story: go('story'), rampage: go('rampage'), settings: go('settings') });
 }
 
 window.addEventListener('hashchange', route);

@@ -28,45 +28,41 @@ export function L<T>(m: Record<Lang, T>): T {
 }
 
 const en = {
-  greatJob: 'Great job!',
-  playAgain: 'Play again ▶',
-  home: 'Back to menu',
+  home: 'Back to title screen',
   sound: 'Sound on/off',
   language: 'Language',
   settings: 'Settings',
-  hold: 'Grown-ups: hold for 3 seconds',
+  hold: 'Hold for 3 seconds',
   soundLabel: 'Sounds and voice',
   app: 'App',
   refresh: 'Refresh app',
   refreshHint: 'Loads the newest version',
   on: 'On',
   off: 'Off',
-  stars: 'Stars',
-  starsHint: (n: number) => `Collected so far: ${n} ⭐`,
-  resetStars: 'Reset stars',
+  progress: 'Story progress',
+  progressHint: (done: number, total: number) => `Levels completed: ${done} of ${total}`,
+  resetProgress: 'Reset progress',
   sure: 'Tap again to reset',
 };
 
-/** Shell and menu strings. Games keep their own tables next to their code. */
+/** Shell, splash and settings strings. Games keep their own tables next to their code. */
 export const UI: Record<Lang, typeof en> = {
   en,
   da: {
-    greatJob: 'Godt klaret!',
-    playAgain: 'Spil igen ▶',
-    home: 'Tilbage til menuen',
+    home: 'Tilbage til titelskærmen',
     sound: 'Lyd til/fra',
     language: 'Sprog',
     settings: 'Indstillinger',
-    hold: 'Voksne: hold inde i 3 sekunder',
+    hold: 'Hold inde i 3 sekunder',
     soundLabel: 'Lyd og stemme',
     app: 'App',
     refresh: 'Opdater app',
     refreshHint: 'Henter den nyeste version',
     on: 'Til',
     off: 'Fra',
-    stars: 'Stjerner',
-    starsHint: (n: number) => `Samlet indtil nu: ${n} ⭐`,
-    resetStars: 'Nulstil stjerner',
+    progress: 'Historien',
+    progressHint: (done: number, total: number) => `Gennemførte baner: ${done} af ${total}`,
+    resetProgress: 'Nulstil',
     sure: 'Tryk igen for at nulstille',
   },
 };

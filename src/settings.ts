@@ -1,8 +1,9 @@
 import { isMuted, setMuted, sfx } from './engine/audio';
-import { getTotalStars, resetTotalStars } from './engine/storage';
 import { getLang, L, LANGS, setLang, UI } from './i18n';
+import { LEVELS } from './game/levels';
+import { levelsDone, resetProgress } from './game/progress';
 
-/** Grown-up settings page: language, sound, stars and an app refresh. */
+/** Settings page: language, sound, story progress and an app refresh. */
 export function mountSettings(app: HTMLElement, onBack: () => void, onLangChange: () => void): () => void {
   const el = document.createElement('div');
   el.className = 'menu settings';
@@ -12,34 +13,33 @@ export function mountSettings(app: HTMLElement, onBack: () => void, onLangChange
       <span>${on ? t.on : t.off}</span><i></i>
     </button>`;
 
+  let armTimer = 0;
   el.innerHTML = `
     <header class="menu-head">
-      <button class="round-btn back" aria-label="${t.home}">🏠</button>
-      <h1 class="settings-title">⚙️ ${t.settings}</h1>
+      <button class="round-btn back" aria-label="${t.home}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 4.5 8 12l7.5 7.5" /></svg></button>
+      <h1 class="settings-title">${t.settings}</h1>
     </header>
     <main class="settings-list">
       <section class="setting">
-        <div class="setting-text"><b>🌍 ${t.language}</b></div>
+        <div class="setting-text"><b>${t.language}</b></div>
         <div class="lang-toggle" role="radiogroup" aria-label="${t.language}">
           ${LANGS.map((l) => `<button class="${l.id === getLang() ? 'on' : ''}" data-lang="${l.id}" role="radio" aria-checked="${l.id === getLang()}" aria-label="${l.label}"><span>${l.flag}</span>${l.label}</button>`).join('')}
         </div>
       </section>
       <section class="setting">
-        <div class="setting-text"><b>🔊 ${t.soundLabel}</b></div>
+        <div class="setting-text"><b>${t.soundLabel}</b></div>
         ${toggle('sound', !isMuted())}
       </section>
       <section class="setting">
-        <div class="setting-text"><b>⭐ ${t.stars}</b><small class="stars-hint">${t.starsHint(getTotalStars())}</small></div>
-        <button class="action-btn danger reset-stars" ${getTotalStars() ? '' : 'disabled'}>${t.resetStars}</button>
+        <div class="setting-text"><b>${t.progress}</b><small class="progress-hint">${t.progressHint(levelsDone(), LEVELS.length)}</small></div>
+        <button class="action-btn danger reset-progress" ${levelsDone() ? '' : 'disabled'}>${t.resetProgress}</button>
       </section>
       <section class="setting">
-        <div class="setting-text"><b>🔄 ${t.app}</b><small>${t.refreshHint}</small></div>
+        <div class="setting-text"><b>${t.app}</b><small>${t.refreshHint}</small></div>
         <button class="action-btn refresh">${t.refresh}</button>
       </section>
     </main>`;
   app.appendChild(el);
-
-  let armTimer = 0;
 
   async function refresh() {
     // Drop the service worker's caches so the reload fetches everything fresh.
@@ -80,25 +80,25 @@ export function mountSettings(app: HTMLElement, onBack: () => void, onLangChange
       sfx.tap();
       return;
     }
-    const reset = target.closest<HTMLButtonElement>('.reset-stars');
+    const reset = target.closest<HTMLButtonElement>('.reset-progress');
     if (reset) {
-      // Two taps, so a stray tap from a child can't wipe the stars.
+      // Two taps, so one stray tap can't wipe the story.
       clearTimeout(armTimer);
       if (!reset.classList.contains('armed')) {
         reset.classList.add('armed');
         reset.textContent = t.sure;
         sfx.tap();
-        armTimer = setTimeout(() => {
+        armTimer = window.setTimeout(() => {
           reset.classList.remove('armed');
-          reset.textContent = t.resetStars;
+          reset.textContent = t.resetProgress;
         }, 3000);
         return;
       }
-      resetTotalStars();
+      resetProgress();
       reset.classList.remove('armed');
-      reset.textContent = t.resetStars;
+      reset.textContent = t.resetProgress;
       reset.disabled = true;
-      el.querySelector('.stars-hint')!.textContent = t.starsHint(0);
+      el.querySelector('.progress-hint')!.textContent = t.progressHint(0, LEVELS.length);
       sfx.whoosh();
       return;
     }

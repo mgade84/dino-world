@@ -17,7 +17,3 @@ export function save(key: string, value: unknown) {
   }
 }
 
-export const getTotalStars = () => load('stars', 0);
-export const addTotalStars = (n: number) => save('stars', getTotalStars() + n);
-export const resetTotalStars = () => save('stars', 0);
-

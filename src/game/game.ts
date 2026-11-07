@@ -1,19 +1,23 @@
 import * as THREE from 'three';
 import type { GameContext } from '../types';
 import { say, sfx } from '../engine/audio';
-import { L } from '../i18n';
+import { L, type Txt } from '../i18n';
 import { animate, buildDino, disposeDinoAssets, DINOS, type DinoSpec, type Rig } from './dinos';
-import { buildWorld, CAGE_SPOTS, groundY, HALF, rng } from './world';
-import { CAGE, CAR_COLORS, createCage, createCar, createPerson, disposePark, posePerson, scare, updateCar, wreckCar, type Cage, type Car, type Person } from './park';
-import { S } from './strings';
+import { buildWorld, groundY, HALF, rng, CAGE_SPOTS } from './world';
+import { CAGE, CAGE_HITS, CAR_COLORS, createCage, createCar, createPerson, disposePark, posePerson, scare, updateCar, wreckCar, type Cage, type Car, type Person } from './park';
+import { HERO, type Goal, type LevelDef } from './levels';
+import { unlockDino, unlockedDinos } from './progress';
+import { clock, M as STRINGS, S } from './strings';
 import './dino.css';
 
-/** Cars to smash and people to scare once out of the cage. */
-const TARGETS = 10;
-/** Bonus stars for breaking another dinosaur out of its cage. */
-const FREE_BONUS = 3;
+/** Jeeps (each with a person beside it) in Rampage, respawned once all are wrecked and scared. */
+const RAMPAGE_TARGETS = 10;
 const NPCS = 6;
-const SKY = '#a6dcf5';
+/** Overcast storm light until the full weather arrives. */
+const SKY = '#8d9aa1';
+/** Mouse look: radians per pixel, and how far the camera tilts up or down. */
+const LOOK = 0.0028;
+const PITCH = { min: -0.45, max: 0.7 };
 /** Third-person camera: behind and above the dinosaur, looking a little ahead of it. */
 const CHASE = { back: 12, up: 12, look: 2, ahead: 9 };
 /** Joystick reach in CSS pixels: the further up from where the finger landed, the faster. */
@@ -28,14 +32,25 @@ interface Npc { rig: Rig; target: THREE.Vector3; wait: number; speed: number; fl
 /** A dinosaur locked in one of the other cages, waiting to be broken out. */
 interface Captive { cage: Cage; spec: DinoSpec; rig: Rig; state: 'caged' | 'leaving' | 'free'; target: THREE.Vector3; heading: number; vel: THREE.Vector3; wait: number; roarIn: number; }
 
+export interface RunOpts {
+  /** The story level, or null for Rampage. */
+  level: LevelDef | null;
+  /** Story only: the level was won or lost. */
+  onEnd(result: { won: boolean; time: number }): void;
+  onRestart(): void;
+  onQuit(): void;
+}
+
 const turnToward = (from: number, to: number, max: number) => {
   let d = to - from;
   d = Math.atan2(Math.sin(d), Math.cos(d));
   return from + THREE.MathUtils.clamp(d, -max, max);
 };
 
-export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
+export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   const root = ctx.area;
+  const level = opts.level;
+  const story = !!level;
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -48,10 +63,10 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(SKY);
-  scene.fog = new THREE.Fog(SKY, 45, 140);
+  scene.fog = new THREE.Fog(SKY, 35, 125);
   const camera = new THREE.PerspectiveCamera(55, 1, 0.3, 220);
-  scene.add(new THREE.HemisphereLight('#e3f5ff', '#4b7d36', 1.3));
-  const sun = new THREE.DirectionalLight('#fff1d0', 2.4);
+  scene.add(new THREE.HemisphereLight('#c9d6dc', '#3a4a30', 1.1));
+  const sun = new THREE.DirectionalLight('#e8e4da', 1.6);
   sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024);
   Object.assign(sun.shadow.camera, { left: -45, right: 45, top: 45, bottom: -45, near: 1, far: 150 });
@@ -70,33 +85,42 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
   hud.className = 'dn-hud';
   hud.style.setProperty('--top', `${ctx.topInset}px`);
   hud.innerHTML = `
-    <div class="dn-goals" hidden>
-      <span aria-label="${S().cars}">🚙 <b class="dn-cars">0</b> / ${TARGETS}</span>
-      <span aria-label="${S().people}">🏃 <b class="dn-people">0</b> / ${TARGETS}</span>
-      <span aria-label="${S().freedLabel}">🦕 <b class="dn-freed">0</b> / ${CAGE_SPOTS.length}</span>
+    <div class="dn-goals">
+      ${level ? `<div class="dn-goals-head">${L(level.name)}</div>` : `<div class="dn-goals-head">${S().rampage}</div>`}
+      <ul></ul>
     </div>
-    <button class="dn-map" aria-label="${S().map}">🗺️</button>
-    <button class="dn-change" aria-label="${S().change}">🔄</button>
-    <button class="dn-jump" aria-label="${S().jump}"><span>⬆️</span></button>
-    <button class="dn-roar" aria-label="${S().roar}"><span>🦖</span></button>
-    <div class="dn-hint" aria-hidden="true">👆</div>
+    ${level?.timeLimit ? `<div class="dn-timer"><small>${S().timeLeft}</small><b>${clock(level.timeLimit)}</b></div>` : ''}
+    <button class="dn-btn dn-pause" aria-label="${S().pause}"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg></button>
+    ${story ? '' : `<button class="dn-btn dn-change" aria-label="${S().change}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 14-5.3V4h2v6h-6V8h2.8A6 6 0 1 0 18 12h2a8 8 0 0 1-16 0z"/></svg></button>`}
+    <button class="dn-act dn-jump" aria-label="${S().jump}"><span>${S().jump}</span></button>
+    <button class="dn-act dn-roar" aria-label="${S().roar}"><span>${S().roar}</span></button>
+    <div class="dn-radio" hidden><small>${S().radio}</small><p></p></div>
+    <div class="dn-toast" hidden></div>
     <div class="dn-stick" hidden><i></i></div>
     <div class="dn-pick" hidden>
       <h2>${S().pick}</h2>
       <div class="dn-cards"></div>
+    </div>
+    <div class="dn-menu" hidden>
+      <h2>${S().paused}</h2>
+      <button class="dn-big" data-act="resume">${S().resume}</button>
+      ${story ? `<button class="dn-big dn-ghost" data-act="restart">${S().restart}</button>` : ''}
+      <button class="dn-big dn-ghost" data-act="quit">${S().quit}</button>
     </div>`;
   root.appendChild(hud);
-  const goals = hud.querySelector<HTMLElement>('.dn-goals')!;
-  const carCount = hud.querySelector('.dn-cars')!;
-  const peopleCount = hud.querySelector('.dn-people')!;
-  const freedCount = hud.querySelector('.dn-freed')!;
-  const hint = hud.querySelector<HTMLElement>('.dn-hint')!;
+  const goalList = hud.querySelector<HTMLElement>('.dn-goals ul')!;
+  const timerEl = hud.querySelector<HTMLElement>('.dn-timer');
+  const timerNum = timerEl?.querySelector('b') ?? null;
+  const radioBox = hud.querySelector<HTMLElement>('.dn-radio')!;
+  const toast = hud.querySelector<HTMLElement>('.dn-toast')!;
+  const menu = hud.querySelector<HTMLElement>('.dn-menu')!;
   const picker = hud.querySelector<HTMLElement>('.dn-pick')!;
   const stick = hud.querySelector<HTMLElement>('.dn-stick')!;
   const knob = stick.querySelector('i')!;
 
   // ---- Player ----
-  let spec: DinoSpec = DINOS[0];
+  const heroSpec = DINOS.find((d) => d.id === HERO)!;
+  let spec: DinoSpec = heroSpec;
   let player: Rig | null = null;
   const vel = new THREE.Vector3();
   let heading = 0;
@@ -126,8 +150,21 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
     player.root.rotation.y = heading;
     scene.add(player.root);
     flying = false;
-    jumpIcon.textContent = s.fly ? '🦅' : '⬆️';
+    jumpIcon.textContent = s.fly ? S().fly : S().jump;
     jumpBtn.setAttribute('aria-label', s.fly ? S().fly : S().jump);
+  }
+
+  /** Levels that begin after the breakout: the paddock's front bars are already bent open, and the dinosaur stands just outside. */
+  function startOutside() {
+    for (let k = 0; k < CAGE_HITS; k++) cage.bump(3);
+    free = true;
+    const out = cage.exit!;
+    const x = CAGE.x + out.x * (CAGE.half + 8);
+    const z = CAGE.z + out.z * (CAGE.half + 8);
+    heading = camYaw = Math.atan2(out.x, out.z);
+    player!.root.position.set(x, groundY(x, z), z);
+    player!.root.rotation.y = heading;
+    camPos.set(x - out.x * CHASE.back, groundY(x, z) + CHASE.up, z - out.z * CHASE.back);
   }
 
   /** An open spot at least `far` from the cage. */
@@ -171,36 +208,84 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
     });
   }
   spawnCaptives();
-  let freed = 0;
 
-  /** After a finished game: every cage rebuilt and filled again, counters back to 0, and pick a dinosaur. */
-  function newGame() {
-    scene.remove(cage.group);
-    cage = createCage();
-    scene.add(cage.group);
-    for (const c of captives) {
-      scene.remove(c.cage.group, c.rig.root);
-      const k = npcs.findIndex((n) => n.rig === c.rig);
-      if (k >= 0) npcs.splice(k, 1);
+  // ---- Objectives ----
+  const count = { escape: 0, smash: 0, scare: 0, free: 0 };
+  const goals: Goal[] = level?.goals ?? [];
+  const goalNeed = (g: Goal) => (g.kind === 'escape' ? 1 : g.n);
+  const GOAL_LABEL: Record<Goal['kind'], () => string> = {
+    escape: () => S().goalEscape, smash: () => S().goalSmash, scare: () => S().goalScare, free: () => S().goalFree,
+  };
+  function renderGoals() {
+    if (story) {
+      goalList.innerHTML = goals
+        .map((g) => {
+          const need = goalNeed(g);
+          const have = Math.min(need, count[g.kind]);
+          return `<li class="${have >= need ? 'done' : ''}"><i></i>${GOAL_LABEL[g.kind]()}${g.kind === 'escape' ? '' : ` <b>${have}/${need}</b>`}</li>`;
+        })
+        .join('');
+    } else {
+      goalList.innerHTML = `<li>${S().wrecked} <b>${count.smash}</b></li><li>${S().scaredLabel} <b>${count.scare}</b></li><li>${S().freedLabel} <b>${count.free}</b></li>`;
     }
-    spawnCaptives();
-    freed = 0;
-    freedCount.textContent = '0';
-    free = false;
-    goals.hidden = true;
-    arrow.visible = false;
-    started = false; // picking spawns fresh jeeps and visitors and gives the cage hint again
-    showPicker();
+  }
+  const goalsMet = () => story && goals.every((g) => count[g.kind] >= goalNeed(g));
+
+  /** Story: end the level a moment after the last goal (or the clock) so the player sees it happen. */
+  let finished = false;
+  let elapsed = 0;
+  function finish(won: boolean) {
+    if (finished || !level) return;
+    finished = true;
+    const line = won ? level.radio.done : level.radio.fail;
+    if (line) timers.push(window.setTimeout(() => radio(line), won ? 900 : 0));
+    if (won) sfx.win();
+    else sfx.oops();
+    const time = elapsed;
+    timers.push(window.setTimeout(() => alive && opts.onEnd({ won, time }), won ? 4200 : 3200));
+  }
+  function progress(kind: keyof typeof count, n = 1) {
+    count[kind] += n;
+    renderGoals();
+    if (goalsMet()) finish(true);
+    else if (!story && !respawning && cars.every((c) => c.wrecked) && people.every((pp) => pp.state !== 'idle')) {
+      // Rampage never runs dry: a fresh convoy arrives once everything is wrecked and everyone has fled.
+      respawning = true;
+      timers.push(window.setTimeout(() => {
+        respawning = false;
+        if (alive) spawnTargets();
+      }, 4000));
+    }
+  }
+  let respawning = false;
+
+  // ---- Park radio subtitles, and short notices ----
+  let radioTimer = 0;
+  function radio(line: Txt) {
+    const text = L(line);
+    if (!text) return;
+    sfx.radio();
+    radioBox.querySelector('p')!.textContent = text;
+    radioBox.hidden = false;
+    timers.push(window.setTimeout(() => alive && say(text), 250));
+    clearTimeout(radioTimer);
+    radioTimer = window.setTimeout(() => (radioBox.hidden = true), Math.max(4000, text.length * 75));
+  }
+  let toastTimer = 0;
+  function notice(text: string) {
+    toast.textContent = text;
+    toast.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => (toast.hidden = true), 3500);
   }
 
   function freeCaptive(c: Captive) {
     c.state = 'leaving';
     c.rig.roaring = 1;
     sfx.roar(c.spec.roar);
-    freed++;
-    freedCount.textContent = String(freed);
-    ctx.addStars(FREE_BONUS);
-    timers.push(window.setTimeout(() => say(S().freed(L(c.spec.name))), 600));
+    timers.push(window.setTimeout(() => alive && radio({ en: M_freed('en', c.spec), da: M_freed('da', c.spec) }), 600));
+    if (unlockDino(c.spec.id)) timers.push(window.setTimeout(() => alive && notice(S().unlocked(L(c.spec.name))), 2200));
+    progress('free');
   }
 
   // ---- Baby dinosaurs wandering about ----
@@ -217,9 +302,12 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
   // ---- Jeeps to smash and visitors to scare, one visitor beside each jeep ----
   let cars: Car[] = [];
   let people: Person[] = [];
-  let smashed = 0;
-  let scared = 0;
-  let finishing = false;
+  /** Enough jeeps (and a person by each) to meet the level's goals with a couple to spare. */
+  const targetCount = () => {
+    if (!level) return RAMPAGE_TARGETS;
+    const need = Math.max(0, ...goals.map((g) => (g.kind === 'smash' || g.kind === 'scare' ? g.n : 0)));
+    return need ? need + 2 : 4;
+  };
 
   function spawnTargets() {
     cars.forEach((c) => {
@@ -230,7 +318,8 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
     cars = [];
     people = [];
     const sites: THREE.Vector3[] = [];
-    for (let tries = 0; sites.length < TARGETS && tries < 3000; tries++) {
+    const n = targetCount();
+    for (let tries = 0; sites.length < n && tries < 3000; tries++) {
       const p = world.openSpot(placeRand, 5);
       if (Math.hypot(p.x - CAGE.x, p.z - CAGE.z) < 30) continue;
       if (sites.some((o) => Math.hypot(o.x - p.x, o.z - p.z) < 24 - tries / 150)) continue;
@@ -252,29 +341,12 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
       scene.add(person.group);
       people.push(person);
     });
-    smashed = scared = 0;
-    carCount.textContent = peopleCount.textContent = '0';
-  }
-
-  function checkDone() {
-    if (finishing || smashed < TARGETS || scared < TARGETS) return;
-    finishing = true;
-    timers.push(
-      window.setTimeout(async () => {
-        await ctx.celebrate(S().done, S().doneSub(TARGETS), 5);
-        finishing = false;
-        if (alive) newGame();
-      }, 1500),
-    );
   }
 
   function frighten(pp: Person) {
     if (!scare(pp)) return;
-    scared++;
-    peopleCount.textContent = String(scared);
     sfx.scream();
-    ctx.addStars(1);
-    checkDone();
+    progress('scare');
   }
 
   // Arrow on the ground pointing to the nearest jeep or calm visitor.
@@ -282,7 +354,7 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
   const arrowGeo = keep(new THREE.ShapeGeometry(arrowShape));
   arrowGeo.rotateX(-Math.PI / 2);
   arrowGeo.rotateY(Math.PI);
-  const arrowMat = keep(new THREE.MeshBasicMaterial({ color: '#ffd166', transparent: true, depthWrite: false }));
+  const arrowMat = keep(new THREE.MeshBasicMaterial({ color: '#ffb020', transparent: true, depthWrite: false }));
   const arrow = new THREE.Mesh(arrowGeo, arrowMat);
   arrow.scale.setScalar(1.4);
   scene.add(arrow);
@@ -305,7 +377,7 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
   }
 
   // ---- Picker, with pictures rendered from the real models ----
-  function renderThumbs() {
+  function renderThumbs(list: DinoSpec[]) {
     const s = new THREE.Scene();
     s.add(new THREE.HemisphereLight('#ffffff', '#88aa66', 2.2));
     const l = new THREE.DirectionalLight('#ffffff', 1.6);
@@ -315,7 +387,7 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
     renderer.setPixelRatio(1);
     renderer.setSize(360, 270, false);
     renderer.setClearColor('#000000', 0);
-    const urls = DINOS.map((d) => {
+    const urls = list.map((d) => {
       const r = buildDino(d);
       r.root.rotation.y = -0.7;
       if (r.wings.length) {
@@ -338,34 +410,31 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     return urls;
   }
-  const thumbs = renderThumbs();
-  picker.querySelector('.dn-cards')!.innerHTML = DINOS.map(
-    (d, i) => `<button class="dn-card" data-i="${i}" style="--c:${d.colors.body}"><img src="${thumbs[i]}" alt=""><span>${L(d.name)}</span></button>`,
-  ).join('');
+  /** Rampage: the dinosaurs freed in the story so far. */
+  const choices = story ? [] : DINOS.filter((d) => unlockedDinos().includes(d.id));
+  if (choices.length > 1) {
+    const thumbs = renderThumbs(choices);
+    picker.querySelector('.dn-cards')!.innerHTML = choices
+      .map((d, i) => `<button class="dn-card" data-i="${i}"><img src="${thumbs[i]}" alt=""><span>${L(d.name)}</span></button>`)
+      .join('');
+  }
 
-  let started = false;
   let picking = false;
+  let paused = false;
   const timers: number[] = [];
   function showPicker() {
     picking = true;
     picker.hidden = false;
-    say(S().pick);
+    unlockPointer();
   }
   picker.addEventListener('click', (e) => {
     const b = (e.target as HTMLElement).closest<HTMLElement>('.dn-card');
     if (!b) return;
-    const d = DINOS[Number(b.dataset.i)];
+    const d = choices[Number(b.dataset.i)];
     sfx.tap();
     picker.hidden = true;
     picking = false;
     setPlayer(d);
-    say(L(d.name));
-    if (d.fly) timers.push(window.setTimeout(() => say(S().flyHint), 1300));
-    if (!started) {
-      started = true;
-      spawnTargets();
-      timers.push(window.setTimeout(() => say(S().escapeHint), 1600));
-    }
   });
 
   // ---- Input: a joystick wherever the finger lands (up = forward); arrow keys / WASD too ----
@@ -377,8 +446,37 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
   const keys = new Set<string>();
   const dir = new THREE.Vector3();
 
+  // Mouse look: a click on the game captures the mouse (where the browser allows it); while captured,
+  // moving the mouse turns the camera and clicking roars or bites. Touch keeps the drag-anywhere joystick.
+  const canLock = 'requestPointerLock' in canvas;
+  const mouseLook = () => document.pointerLockElement === canvas;
+  let camPitch = 0.1;
+  function unlockPointer() {
+    if (mouseLook()) document.exitPointerLock();
+  }
+  const onMouseMove = (e: MouseEvent) => {
+    if (!mouseLook() || paused || picking) return;
+    camYaw -= e.movementX * LOOK;
+    camPitch = THREE.MathUtils.clamp(camPitch + e.movementY * LOOK, PITCH.min, PITCH.max);
+  };
+  document.addEventListener('mousemove', onMouseMove);
+  // Esc releases the mouse before the page sees the key, so losing the lock mid-game pauses it.
+  let lockedOnce = false;
+  const onLockChange = () => {
+    if (mouseLook()) lockedOnce = true;
+    else if (lockedOnce && !paused && !picking && !finished) setPaused(true);
+  };
+  document.addEventListener('pointerlockchange', onLockChange);
+
   canvas.addEventListener('pointerdown', (e) => {
-    if (picking || pointer !== null) return;
+    if (picking || paused) return;
+    if (e.pointerType === 'mouse' && canLock) {
+      if (mouseLook()) {
+        if (e.button === 0) act();
+      } else canvas.requestPointerLock();
+      return;
+    }
+    if (pointer !== null) return;
     pointer = e.pointerId;
     canvas.setPointerCapture(e.pointerId);
     const r = hud.getBoundingClientRect();
@@ -389,7 +487,6 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
     stick.style.top = `${oy - r.top}px`;
     knob.style.transform = '';
     stick.hidden = false;
-    hint.hidden = true;
   });
   canvas.addEventListener('pointermove', (e) => {
     if (e.pointerId !== pointer) return;
@@ -413,13 +510,18 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
     ArrowLeft: [-1, 0], KeyA: [-1, 0], ArrowRight: [1, 0], KeyD: [1, 0],
   };
   const onKey = (e: KeyboardEvent) => {
+    if (e.code === 'Escape' || e.code === 'KeyP') {
+      if (e.type === 'keydown' && !picking && !finished) setPaused(!paused);
+      return;
+    }
+    if (paused) return;
     if (e.code === 'Space') {
       if (e.type === 'keydown' && !e.repeat) jumpDown();
       else if (e.type === 'keyup') jumpUp();
       e.preventDefault();
       return;
     }
-    if (e.code === 'KeyR') {
+    if (e.code === 'KeyR' || e.code === 'KeyE') {
       if (e.type === 'keydown') act();
       e.preventDefault();
       return;
@@ -428,8 +530,10 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
     e.preventDefault();
     if (e.type === 'keydown') keys.add(e.code);
     else keys.delete(e.code);
-    hint.hidden = true;
   };
+  // Keys held while the window lost focus would otherwise keep the dinosaur walking.
+  const onBlur = () => keys.clear();
+  window.addEventListener('blur', onBlur);
   window.addEventListener('keydown', onKey);
   window.addEventListener('keyup', onKey);
 
@@ -459,7 +563,6 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
       grounded = false;
       sfx.whoosh();
     }
-    hint.hidden = true;
   }
   function jumpUp() {
     flying = false;
@@ -470,15 +573,14 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
     vy = JUMP;
     grounded = false;
     player.root.position.y += 0.01;
-    sfx.boing();
-    hint.hidden = true;
+    sfx.thud();
   }
 
   let shake = 0;
   const roarBtn = hud.querySelector<HTMLElement>('.dn-roar')!;
   const jumpBtn = hud.querySelector<HTMLElement>('.dn-jump')!;
   const jumpIcon = jumpBtn.querySelector('span')!;
-  const roarIcon = roarBtn.querySelector('span')!;
+  const roarLabel = roarBtn.querySelector('span')!;
   let biteShown = false;
 
   /** The nearest bars within biting reach, whichever way the dinosaur faces: its own cage from inside, others' from outside. */
@@ -503,7 +605,7 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
 
   /** The roar button: bites the bars when close to them, otherwise roars. */
   function act() {
-    if (!player || picking || player.roaring > 0 || player.biting > 0) return;
+    if (!player || picking || paused || player.roaring > 0 || player.biting > 0) return;
     const target = biteTarget();
     if (!target || !grounded) return roar();
     player.biting = 1;
@@ -527,7 +629,7 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
   }
 
   function roar() {
-    if (!player || picking || player.roaring > 0) return;
+    if (!player || picking || paused || player.roaring > 0) return;
     player.roaring = 1;
     sfx.roar(spec.roar);
     shake = 0.5;
@@ -548,13 +650,34 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
     jumpDown();
   });
   for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) jumpBtn.addEventListener(ev, jumpUp);
-  hud.querySelector('.dn-change')!.addEventListener('click', () => {
+  hud.querySelector('.dn-change')?.addEventListener('click', () => {
     sfx.tap();
     showPicker();
   });
-  hud.querySelector('.dn-map')!.addEventListener('click', () => {
+
+  // ---- Pause menu ----
+  function setPaused(on: boolean) {
+    paused = on;
+    menu.hidden = !on;
+    keys.clear();
+    if (on) unlockPointer();
+    stick.hidden = true;
+    pointer = null;
+    sx = sy = 0;
+  }
+  hud.querySelector('.dn-pause')!.addEventListener('click', () => {
+    if (finished) return;
     sfx.tap();
-    opts.onMap();
+    setPaused(true);
+  });
+  menu.addEventListener('click', (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>('[data-act]');
+    if (!b) return;
+    sfx.tap();
+    const a = b.dataset.act;
+    if (a === 'resume') setPaused(false);
+    else if (a === 'restart') opts.onRestart();
+    else opts.onQuit();
   });
 
   // ---- Simulation ----
@@ -569,7 +692,15 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
   const pressDir = new THREE.Vector3();
 
   function update(dt: number) {
+    if (paused) return;
     t += dt;
+    if (!finished) elapsed += dt;
+    if (level?.timeLimit && !finished && timerNum) {
+      const left = Math.max(0, level.timeLimit - elapsed);
+      timerNum.textContent = clock(Math.ceil(left));
+      timerEl!.classList.toggle('low', left < 20);
+      if (left <= 0) finish(false);
+    }
     world.update(t, dt);
     if (player) {
       const p = player.root.position;
@@ -580,7 +711,7 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
         side += KEYS[k][0];
         ahead -= KEYS[k][1];
       }
-      if (picking) side = ahead = 0;
+      if (picking || finished) side = ahead = 0;
       const amount = Math.min(1, Math.hypot(side, ahead));
       fwd.set(Math.sin(camYaw), 0, Math.cos(camYaw));
       right.set(-Math.cos(camYaw), 0, Math.sin(camYaw));
@@ -617,9 +748,10 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
         }
         if (cage.open && !cage.inside(p)) {
           free = true;
-          goals.hidden = false;
-          sfx.win();
-          say(S().escaped);
+          sfx.roar(spec.roar * 1.1);
+          shake = 0.8;
+          if (level?.radio.escaped) radio(level.radio.escaped);
+          progress('escape');
         }
       }
       for (const c of captives) {
@@ -636,7 +768,7 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
       if (!!target !== biteShown) {
         biteShown = !!target;
         roarBtn.classList.toggle('bite', biteShown);
-        roarIcon.textContent = biteShown ? '🦷' : '🦖';
+        roarLabel.textContent = biteShown ? S().bite : S().roar;
         roarBtn.setAttribute('aria-label', biteShown ? S().bite : S().roar);
       }
       // Gravity, jumping, and walking down hills without bouncing.
@@ -697,13 +829,10 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
         const reach = player.radius + 2.1;
         if (free && d < reach && p.y < q.y + 3.5 && (speed > 3 || vy < -4)) {
           wreckCar(car, p, scene);
-          smashed++;
-          carCount.textContent = String(smashed);
           sfx.crash();
           shake = 0.6;
-          ctx.addStars(1);
           for (const pp of people) if (Math.hypot(pp.group.position.x - q.x, pp.group.position.z - q.z) < 14) frighten(pp);
-          checkDone();
+          progress('smash');
         } else if (d < reach && p.y < q.y + 2.6) {
           p.addScaledVector(away.divideScalar(d || 1), reach - d);
         }
@@ -730,7 +859,7 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
         posePerson(pp, dt, t, run);
       }
       for (const c of captives) if (free && c.state === 'caged') consider(c.cage.center);
-      arrow.visible = free && !!best.at && best.d > 14 && !picking;
+      arrow.visible = free && !!best.at && best.d > 14 && !picking && !finished;
       if (best.at && arrow.visible) {
         const target = best.at;
         const a = Math.atan2(target.x - p.x, target.z - p.z);
@@ -745,15 +874,16 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
       // Camera swings round behind the dinosaur while it runs forward. Pulling the stick
       // back walks it towards the camera instead (following then would spin in circles).
       // At the bars the camera holds still: otherwise a slightly sideways push turns dinosaur and camera round together.
-      if (speed > 1 && ahead > -0.2 && !atBars) {
+      if (speed > 1 && ahead > -0.2 && !atBars && !mouseLook()) {
         const d = Math.atan2(Math.sin(heading - camYaw), Math.cos(heading - camYaw));
         camYaw += d * (1 - Math.exp(-dt * 2.2));
       }
       fwd.set(Math.sin(camYaw), 0, Math.cos(camYaw));
       const c = spec.cam;
+      // Pitch tilts the camera over the top (positive) or down behind the dinosaur (negative).
       camAt.copy(p).addScaledVector(fwd, CHASE.ahead * c).setY(p.y + CHASE.look * c);
-      dir.copy(p).addScaledVector(fwd, -CHASE.back * c);
-      dir.y = Math.max(p.y + CHASE.up * c, groundY(dir.x, dir.z) + 3);
+      dir.copy(p).addScaledVector(fwd, -CHASE.back * c * (1 - camPitch * 0.35));
+      dir.y = Math.max(p.y + CHASE.up * c * (0.9 + camPitch), groundY(dir.x, dir.z) + 3);
       camPos.lerp(dir, 1 - Math.exp(-dt * 6));
     }
     shake = Math.max(0, shake - dt);
@@ -867,7 +997,8 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
   let alive = true;
   function frame(now: number) {
     raf = requestAnimationFrame(frame);
-    const dt = Math.min(0.05, (now - last) / 1000);
+    // A frame's timestamp can be a little earlier than the start time; a negative step would run every countdown backwards.
+    const dt = THREE.MathUtils.clamp((now - last) / 1000, 0, 0.05);
     last = now;
     update(dt);
     renderer.render(scene, camera);
@@ -892,8 +1023,12 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
 
   renderer.setClearColor(SKY, 1);
   resize();
-  setPlayer(DINOS[0]);
-  showPicker();
+  setPlayer(heroSpec);
+  if (!level || level.start === 'free') startOutside();
+  spawnTargets();
+  renderGoals();
+  if (choices.length > 1) showPicker();
+  if (level) timers.push(window.setTimeout(() => alive && radio(level.radio.start), 900));
   raf = requestAnimationFrame(frame);
 
   return () => {
@@ -903,6 +1038,12 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
     document.removeEventListener('visibilitychange', onVis);
     window.removeEventListener('keydown', onKey);
     window.removeEventListener('keyup', onKey);
+    window.removeEventListener('blur', onBlur);
+    document.removeEventListener('mousemove', onMouseMove);
+    document.removeEventListener('pointerlockchange', onLockChange);
+    unlockPointer();
+    clearTimeout(radioTimer);
+    clearTimeout(toastTimer);
     ro.disconnect();
     world.dispose();
     extra.forEach((x) => x.dispose());
@@ -913,4 +1054,9 @@ export function runDino(ctx: GameContext, opts: { onMap(): void }): () => void {
     canvas.remove();
     hud.remove();
   };
+}
+
+/** The freed-dinosaur radio line in one language, using that language's species name. */
+function M_freed(lang: 'en' | 'da', d: DinoSpec) {
+  return STRINGS[lang].freed(d.name[lang]);
 }

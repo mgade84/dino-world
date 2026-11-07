@@ -144,6 +144,7 @@ function noise(dur: number, vol: number, type: BiquadFilterType, freq: number, w
   const t = ac.currentTime + when;
   const src = ac.createBufferSource();
   src.buffer = noiseBuffer(ac);
+  src.loop = true; // the buffer is one second long; longer sounds keep reading it
   const f = ac.createBiquadFilter();
   f.type = type;
   f.frequency.value = freq;
@@ -266,9 +267,22 @@ export const sfx = {
       voice('triangle', f, 0.3, i === 5 ? 0.7 : 0.22, i * 0.11),
     );
   },
-  /** Gentle "not quite" — never harsh, these are small kids. */
+  /** Mission failed: a low falling tone. */
   oops() {
-    voice('sine', 330, 0.22, 0.28, 0, 220);
+    voice('sawtooth', 220, 0.12, 0.9, 0, 110, 0.02);
+    voice('sine', 110, 0.2, 1.1, 0.05, 55);
+  },
+  /** Walkie-talkie: a burst of static, a squelch and a click. */
+  radio() {
+    noise(0.22, 0.12, 'bandpass', 1800);
+    voice('square', 1200, 0.05, 0.08, 0.2);
+    noise(0.04, 0.12, 'highpass', 3000, 0.28);
+  },
+  /** Distant thunder: a crack, then a long low rumble. */
+  thunder() {
+    noise(0.25, 0.35, 'lowpass', 1400);
+    noise(2.6, 0.4, 'lowpass', 180, 0.1);
+    noise(1.8, 0.25, 'lowpass', 90, 0.5);
   },
   boing() {
     voice('sine', 180, 0.3, 0.35, 0, 420);

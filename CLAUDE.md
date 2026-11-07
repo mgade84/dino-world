@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Dino World is an offline-capable, iPad-first 3D web game for children, built with Vite, TypeScript and Three.js and no UI framework. It makes no network calls and has no ads or tracking. Keep it that way. It was split out of Mini Mix (`../mini-mix`), and `src/` outside `src/game/` is a copy of Mini Mix's shell and engine. When you fix a bug there, consider whether Mini Mix needs the same fix.
+Dino World is an offline-capable, iPad-first 3D web game for ages 12 and up, built with Vite, TypeScript and Three.js and no UI framework. It makes no network calls and has no ads or tracking. Keep it that way. It is a story game: a T-Rex breaking out of a dinosaur theme park during a storm. The park, island, company and characters are original (Primordia park on Kessick Island, run by Halcyon Genetics; the hero is Specimen T-07). Keep it that way: no names, logos, music or recreated scenes from existing films or games. It was split out of Mini Mix (`../mini-mix`), and `src/` outside `src/game/` is a copy of Mini Mix's shell and engine. When you fix a bug there, consider whether Mini Mix needs the same fix.
 
 ## Commands
 
@@ -15,6 +15,8 @@ WATCH_POLLING=true docker compose --profile dev up   # if edits don't trigger re
 docker compose --profile dev up --build -V           # after changing package.json
 ```
 
+To typecheck without local Node: `docker compose --profile dev run --rm dev npm run typecheck`.
+
 With Node installed locally (`npm ci` first): `npm run typecheck` (tsc --noEmit, strict, noUnusedLocals/Parameters), `npm run build`, `npm run dev`.
 
 `scripts/voice/build.sh` generates the recorded Danish speech into `public/voice/` for the dev server; it needs only Docker. The production image generates it itself.
@@ -23,9 +25,15 @@ The project has no test suite and no linter. `npm run typecheck` is the main cor
 
 ## Architecture
 
-- **Routing** (`src/main.ts`): hash-based. `#/` is the start screen (`menu.ts`, one card for the game), `#/settings` is the grown-up settings page (`settings.ts`), and `#/<game.id>` mounts the game through `shell.ts`. Each mount returns an unmount function, and `route()` calls it before mounting the next view. Changing the language re-runs `route()`, so views read strings when they mount.
-- **Game contract** (`src/types.ts`): the game is a `GameDef` exported from `src/game/index.ts`. `start(ctx)` must return a cleanup function that tears down everything it created: the renderer, geometries, listeners, timers, audio and speech. The shell owns the HUD (home button, star counter) and the `celebrate()`/`choose()` overlays, and adds stars to the stored total. The game must leave `ctx.topInset` free for the HUD.
-- **Three.js**: `src/game/index.ts` lazy-loads each world with dynamic `import()`, so Three.js lands in separate chunks. Keep every Three.js import out of the eager graph.
+- **Routing** (`src/main.ts`): hash-based. `#/` is the title screen (`splash.ts`/`splash.css`: a DOM/SVG storm scene with the Story and Rampage menu), `#/settings` is the settings page (`settings.ts`), and `#/story` and `#/rampage` mount the game in that mode through `shell.ts`. Each mount returns an unmount function, and `route()` calls it before mounting the next view. Changing the language re-runs `route()`, so views read strings when they mount.
+- **Game contract** (`src/types.ts`): the game is a `GameDef` exported from `src/game/index.ts`. `start(ctx, mode)` must return a cleanup function that tears down everything it created: the renderer, geometries, listeners, timers, audio and speech. The shell owns only the back-to-title button; the game must leave `ctx.topInset` free for it, and can call `ctx.exit()`. There is no score or star system.
+- **Three.js**: `src/game/index.ts` lazy-loads `game.ts` with dynamic `import()`, so Three.js lands in a separate chunk. Keep every Three.js import out of the eager graph: `levels.ts`, `progress.ts`, `species.ts` and `strings.ts` are imported by the title screen, settings and `scripts/voice/phrases.ts`, so they must stay free of it.
+- **Game flow** (`src/game/index.ts`): plain DOM screens around the 3D level. Story mode goes level select → mission brief → level → debrief (next level or retry). Rampage starts the island straight away with no goals and respawns targets. Each level is a fresh `runDino(ctx, { level, onEnd, onRestart, onQuit })` from `game.ts`, torn down before the next.
+- **Levels** (`levels.ts`): data, not code. A `LevelDef` holds its name, place, brief, goals (`escape`, `smash`, `scare`, `free` with counts), a start (`cage` or just outside the broken paddock), an optional time limit, park-radio lines and a `ready` flag. Levels with `ready: false` show as "coming soon". A new goal kind needs counting in `game.ts` (`progress()`), a label in `strings.ts` and the brief text in `index.ts`.
+- **Progress** (`progress.ts`): levels completed in order, and which species are unlocked for Rampage (the T-Rex hero always is; freeing a caged dinosaur unlocks its species). Stored under `dinoworld:progress`; settings can reset it.
+- **3D modules**: `game.ts` (the level: input, camera, HUD, objectives, radio, pause menu), `world.ts` (terrain and plants), `dinos.ts` (the procedural dinosaur rig: `buildDino`/`animate`), `park.ts` (cages, jeeps, people). Species are in `species.ts`; to add one, add it to `DINOS` and give it a model in `dinos.ts`.
+- **Controls**: touch uses a joystick wherever the finger lands plus on-screen buttons. On a computer, a click captures the mouse (pointer lock) for mouse look; WASD/arrows move, click/E/R roars or bites, Space jumps, and Esc/P pauses. Releasing the mouse pointer pauses the game.
+- **Three.js disposal**: geometries and materials are shared at module level in `dinos.ts`/`park.ts` and freed by `disposeDinoAssets()`/`disposePark()`. Per-run resources go through a local `keep()` helper into a disposables list. `runDino`'s cleanup must call all of these plus `renderer.dispose()`.
 - **Audio** (`src/engine/audio.ts`): every sound effect is synthesized with Web Audio; there are no effect files. `say()` uses the Web Speech API on iOS. Elsewhere it speaks Danish with clips generated at build time into `public/voice/da/` (played through the Web Audio graph, so mute applies) and otherwise uses the Web Speech API. `main.ts` wires up iOS audio unlocking.
 - **Storage** (`src/engine/storage.ts`): `load`/`save` wrap localStorage with the `dinoworld:` prefix and swallow errors.
 - **Offline**: `public/sw.js` is registered only in production builds. Navigations are network-first and other same-origin GETs are cache-first.
@@ -33,7 +41,7 @@ The project has no test suite and no linter. `npm run typecheck` is the main cor
 ## Conventions
 
 - **i18n**: English and Danish (`src/i18n.ts`). `L(x)` picks the current language. Shell strings live in `UI`; the game's strings are in `src/game/strings.ts`, typed as `Record<Lang, typeof en>` so TypeScript flags any missing Danish string. Every new user-facing string, including spoken prompts, needs both languages.
-- **Non-readers**: the game speaks short prompts with `say()`, and gameplay must not depend on reading.
-- **Danish speech clips**: every Danish text passed to `say()` needs a clip. When you add or change one, extend `scripts/voice/phrases.ts`. Clips are generated at build time, never committed (`public/voice/` is git-ignored), and named by `clipKey(text)`, so any text change means a new recording. Missing clips fall back to the device voice and log a warning in dev.
-- **iPad/touch**: the page sets `touch-action: none`, blocks pinch-zoom and long-press menus, respects safe-area insets and supports multi-touch through pointer ids. DOM UI animates with `transform` and `opacity` only.
-- **Grown-up gating**: settings open only after holding ⚙️ on the start screen for 3 seconds. Any grown-up-only option belongs on that page.
+- **Tone (12+)**: realistic and moody, not cute. People get scared, knocked down and run away; nobody is hurt, there is no blood and nobody dies. Reading is fine (briefs, objectives, subtitles), but key story beats are also spoken as park radio through `radio()` in `game.ts`, which shows a subtitle and calls `say()`.
+- **Danish speech clips**: every Danish text passed to `say()` needs a clip. `scripts/voice/phrases.ts` collects every level's radio lines from `LEVELS` automatically; any other spoken text must be added there by hand. Clips are generated at build time, never committed (`public/voice/` is git-ignored), and named by `clipKey(text)`, so any text change means a new recording. Missing clips fall back to the device voice and log a warning in dev.
+- **iPad first**: the page sets `touch-action: none`, blocks pinch-zoom and long-press menus, respects safe-area insets and supports multi-touch through pointer ids. DOM UI animates with `transform` and `opacity` only.
+- **Settings gating**: settings open only after holding ⚙️ on the title screen for 3 seconds.

@@ -1,5 +1,5 @@
 /**
- * Lists every Danish phrase the games pass to say(), using the real string tables,
+ * Lists every Danish phrase the game passes to say(), using the real string tables,
  * and writes public/voice/da/phrases.json ({ clipKey: text }) for generate.py.
  * When you add or change a say() call, extend the matching section below.
  * Runs in the Dockerfile's phrases stage (also via scripts/voice/build.sh).
@@ -7,25 +7,23 @@
 import './env';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { clipKey } from '../../src/engine/clipkey';
-import { setLang, UI } from '../../src/i18n';
+import { setLang } from '../../src/i18n';
 import { M as dino } from '../../src/game/strings';
-import { DINOS, SEA_DINOS } from '../../src/game/species';
+import { DINOS } from '../../src/game/species';
+import { LEVELS } from '../../src/game/levels';
 
 setLang('da');
 
 const out = new Set<string>();
-const add = (...texts: string[]) => texts.forEach((t) => out.add(t));
+const add = (...texts: (string | undefined)[]) => texts.forEach((t) => t && out.add(t));
 
-// Shell: celebrate() speaks its title.
-add(UI.da.greatJob);
-
-// World picker.
-add(dino.da.mapPick);
-// Jungle: picker, dinosaur names, the cage escape, freeing the others and the finale.
-add(dino.da.pick, dino.da.escapeHint, dino.da.escaped, dino.da.done, dino.da.flyHint, ...DINOS.map((d) => d.name.da));
+// Park radio: every story level's lines (spoken through radio() in game.ts).
+for (const lv of LEVELS) {
+  const r = lv.radio;
+  add(r.start.da, r.done.da, r.fail?.da, r.escaped?.da);
+}
+// Radio call when a caged dinosaur breaks free.
 add(...DINOS.map((d) => dino.da.freed(d.name.da)));
-// Ocean.
-add(dino.da.seaHint, ...SEA_DINOS.map((d) => d.name.da));
 
 const table: Record<string, string> = {};
 for (const text of [...out].sort()) {

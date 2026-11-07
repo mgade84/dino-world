@@ -1,25 +1,18 @@
 import type { Txt } from './i18n';
 
-export interface ChoiceOption<T> {
-  label: string;
-  value: T;
-  emoji?: string;
-  color?: string;
-}
+/** Which part of the game the title screen opened. */
+export type Mode = 'story' | 'rampage';
 
-/** What the shell hands to every game. */
+/** What the shell hands to the game. */
 export interface GameContext {
   /** Full-screen element to mount canvases in. */
   area: HTMLElement;
   /** The game's root element, for extra DOM like toolbars. */
   shell: HTMLElement;
-  /** Pixels at the top covered by the HUD (home button / stars). */
+  /** Pixels at the top covered by the HUD (the exit button). */
   readonly topInset: number;
-  addStars(n?: number): void;
-  /** Shows a celebration overlay; resolves when the child taps "Play again". */
-  celebrate(title?: string, subtitle?: string, stars?: number): Promise<void>;
-  /** Shows big picture buttons; resolves with the chosen value. */
-  choose<T>(title: string, options: ChoiceOption<T>[], emoji?: string): Promise<T>;
+  /** Back to the title screen. */
+  exit(): void;
 }
 
 export interface GameDef {
@@ -27,7 +20,6 @@ export interface GameDef {
   title: Txt;
   emoji: string;
   color: string;
-  age: string;
   /** Starts the game; returns a cleanup function. */
-  start(ctx: GameContext): () => void;
+  start(ctx: GameContext, mode: Mode): () => void;
 }

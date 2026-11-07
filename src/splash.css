@@ -1,0 +1,400 @@
+/* ---------- Title screen: night storm over the paddock fence ---------- */
+
+.splash {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  touch-action: none;
+  background: linear-gradient(180deg, #05080a 0%, #0d171b 45%, #16241f 100%);
+  color: var(--text);
+}
+
+.sp-scene,
+.sp-scene > * {
+  position: absolute;
+  pointer-events: none;
+}
+
+.sp-scene {
+  inset: 0;
+}
+
+/* Heavy cloud banks drifting slowly. */
+.sp-clouds {
+  left: -50%;
+  width: 200%;
+  height: 60%;
+  top: -6%;
+  opacity: 0.55;
+  background:
+    radial-gradient(ellipse 18% 40% at 12% 50%, #2a3a40, transparent 70%),
+    radial-gradient(ellipse 22% 35% at 34% 40%, #23323a, transparent 70%),
+    radial-gradient(ellipse 20% 45% at 58% 55%, #2c3c43, transparent 70%),
+    radial-gradient(ellipse 25% 38% at 82% 42%, #22313a, transparent 70%);
+  animation: spDrift 90s linear infinite;
+}
+
+.sp-clouds-b {
+  top: 4%;
+  opacity: 0.35;
+  animation-duration: 140s;
+  animation-direction: reverse;
+}
+
+@keyframes spDrift {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(25%, 0, 0); }
+}
+
+.sp-bolt {
+  left: 66%;
+  top: 0;
+  width: 7%;
+  height: 52%;
+  opacity: 0;
+}
+
+.sp-bolt svg {
+  width: 100%;
+  height: 100%;
+  fill: #e9f4ff;
+  filter: drop-shadow(0 0 12px #9cc8ff);
+}
+
+.sp-canopy {
+  left: 0;
+  bottom: 18%;
+  width: 100%;
+  height: 46%;
+}
+
+.sp-canopy path {
+  fill: #070c0b;
+  stroke: #070c0b;
+  stroke-width: 6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Something large, watching from the trees beyond the broken fence. */
+.sp-eyes {
+  left: 50%;
+  bottom: 30%;
+  width: 9vmin;
+  height: 2vmin;
+  margin-left: -4.5vmin;
+  display: flex;
+  justify-content: space-between;
+  animation: spLurk 9s ease-in-out infinite;
+}
+
+.sp-eyes i {
+  width: 2.4vmin;
+  height: 1.1vmin;
+  border-radius: 50%;
+  background: radial-gradient(circle, #ffe08a 0 25%, #ff9a1f 60%, rgba(255, 120, 20, 0) 75%);
+  box-shadow: 0 0 2vmin 0.4vmin rgba(255, 140, 30, 0.45);
+  animation: spBlink 5.5s infinite;
+}
+
+.sp-eyes i:first-child {
+  transform: rotate(8deg);
+}
+
+.sp-eyes i:last-child {
+  transform: rotate(-8deg);
+}
+
+@keyframes spLurk {
+  0%, 100% { opacity: 0; transform: translate3d(-2vmin, 0, 0); }
+  20%, 70% { opacity: 1; transform: translate3d(0, 0, 0); }
+  85% { opacity: 0; transform: translate3d(3vmin, 0.5vmin, 0); }
+}
+
+@keyframes spBlink {
+  0%, 46%, 50%, 100% { opacity: 1; }
+  48% { opacity: 0; }
+}
+
+.sp-fence {
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: min(34%, 24vw);
+}
+
+.sp-posts rect {
+  fill: #0b1012;
+}
+
+.sp-wires path {
+  fill: none;
+  stroke: #1a2226;
+  stroke-width: 4;
+}
+
+.sp-sign rect {
+  fill: #c9c3b2;
+}
+
+.sp-sign .sp-sign-band {
+  fill: #b3261e;
+}
+
+.sp-sign text {
+  font: 800 18px var(--font-display);
+  letter-spacing: 3px;
+  fill: #f4efe2;
+}
+
+.sp-sign .sp-sign-sub {
+  font-size: 15px;
+  letter-spacing: 1.5px;
+  fill: #1b1b1b;
+}
+
+.sp-sign {
+  transform: rotate(-4deg);
+  transform-origin: 213px 96px;
+  opacity: 0.85;
+}
+
+/* Rain: two layers of streaks falling at slightly different speeds. */
+.sp-rain {
+  left: -10%;
+  top: -100%;
+  width: 120%;
+  height: 200%;
+  opacity: 0.35;
+  background: repeating-linear-gradient(100deg, transparent 0 18px, rgba(190, 215, 230, 0.55) 18px 19px, transparent 19px 44px);
+  background-size: 100% 140px;
+  animation: spRain 0.9s linear infinite;
+}
+
+.sp-rain-near {
+  opacity: 0.22;
+  background-size: 100% 260px;
+  background-image: repeating-linear-gradient(100deg, transparent 0 40px, rgba(210, 230, 240, 0.7) 40px 42px, transparent 42px 90px);
+  animation-duration: 0.6s;
+}
+
+@keyframes spRain {
+  to { transform: translate3d(-6%, 50%, 0); }
+}
+
+.sp-flash {
+  inset: 0;
+  background: #cfe3f5;
+  opacity: 0;
+  mix-blend-mode: screen;
+}
+
+.sp-vignette {
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 45%, transparent 40%, rgba(0, 0, 0, 0.75) 100%);
+}
+
+.splash.flash .sp-flash {
+  animation: spFlash 1.1s ease-out;
+}
+
+.splash.flash .sp-bolt {
+  animation: spBoltShow 0.6s ease-out;
+}
+
+@keyframes spFlash {
+  0% { opacity: 0; }
+  4% { opacity: 0.75; }
+  10% { opacity: 0.1; }
+  16% { opacity: 0.55; }
+  100% { opacity: 0; }
+}
+
+@keyframes spBoltShow {
+  0%, 100% { opacity: 0; }
+  5%, 20% { opacity: 1; }
+  30% { opacity: 0; }
+  38% { opacity: 0.8; }
+}
+
+/* ---------- Title and menu ---------- */
+
+.sp-title {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--sat) + max(8vh, 40px));
+  text-align: center;
+  pointer-events: none;
+  animation: spRise 1.6s cubic-bezier(0.2, 0.7, 0.2, 1) 0.2s backwards;
+}
+
+.sp-title h1 {
+  margin: 0;
+  font: 900 clamp(56px, min(13vw, 17vh), 160px) / 0.9 var(--font-display);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #e9e1cf;
+  background: linear-gradient(180deg, #f7f0dd 0%, #cdbf9f 55%, #8d7b5a 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 6px 0 rgba(0, 0, 0, 0.6)) drop-shadow(0 0 28px rgba(0, 0, 0, 0.8));
+}
+
+.sp-title p {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+  margin: 14px 0 0;
+  font: 700 clamp(15px, 2.2vw, 22px) var(--font-display);
+  letter-spacing: 0.45em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.sp-title p::before,
+.sp-title p::after {
+  content: '';
+  width: clamp(24px, 6vw, 70px);
+  height: 2px;
+  background: currentColor;
+  opacity: 0.7;
+}
+
+@keyframes spRise {
+  from { opacity: 0; transform: translate3d(0, 24px, 0) scale(0.96); }
+}
+
+.sp-menu {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--sab) + max(9vh, 32px));
+  width: min(440px, calc(100% - 48px));
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: spFade 1s ease 1.2s backwards;
+}
+
+@keyframes spFade {
+  from { opacity: 0; }
+}
+
+.sp-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 16px 22px 16px 26px;
+  border-left: 4px solid var(--accent);
+  background: linear-gradient(90deg, rgba(10, 14, 16, 0.85), rgba(10, 14, 16, 0.55));
+  text-align: left;
+  transition: transform 0.15s, background 0.15s;
+}
+
+.sp-item b {
+  font: 800 clamp(26px, 3.6vw, 34px) / 1 var(--font-display);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.sp-item small {
+  font-size: 15px;
+  color: var(--muted);
+}
+
+.sp-item:active {
+  transform: translateX(6px);
+  background: linear-gradient(90deg, rgba(200, 64, 30, 0.45), rgba(10, 14, 16, 0.55));
+}
+
+@media (hover: hover) {
+  .sp-item:not(:disabled):hover {
+    transform: translateX(6px);
+    background: linear-gradient(90deg, rgba(200, 64, 30, 0.35), rgba(10, 14, 16, 0.55));
+  }
+}
+
+.sp-item:disabled {
+  border-left-color: #3b4448;
+  cursor: default;
+}
+
+.sp-item:disabled b {
+  color: #6c7478;
+}
+
+.splash.going .sp-title,
+.splash.going .sp-menu {
+  animation: spOut 0.7s ease-in forwards;
+}
+
+.splash.going {
+  animation: spShake 0.5s;
+}
+
+@keyframes spOut {
+  to { opacity: 0; transform: translate3d(0, 0, 0) scale(1.08); }
+}
+
+.splash.going .sp-menu {
+  animation-name: spOutMenu;
+}
+
+@keyframes spOutMenu {
+  to { opacity: 0; transform: translateX(-50%) scale(1.08); }
+}
+
+@keyframes spShake {
+  20% { transform: translate(-5px, 3px); }
+  40% { transform: translate(4px, -3px); }
+  60% { transform: translate(-3px, 2px); }
+  80% { transform: translate(2px, -1px); }
+}
+
+.sp-gear {
+  position: absolute;
+  top: calc(var(--sat) + 16px);
+  right: calc(var(--sar) + 16px);
+  z-index: 3;
+}
+
+.round-btn > svg.sp-cog {
+  width: 28px;
+  height: 28px;
+  fill: var(--muted);
+  stroke: none;
+}
+
+@media (max-height: 560px) {
+  .sp-title {
+    top: calc(var(--sat) + 20px);
+  }
+
+  .sp-menu {
+    bottom: calc(var(--sab) + 16px);
+  }
+
+  .sp-item {
+    padding-block: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splash *,
+  .splash *::before,
+  .splash *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+@media (max-width: 520px) {
+  .sp-title p {
+    gap: 10px;
+    letter-spacing: 0.25em;
+  }
+}
