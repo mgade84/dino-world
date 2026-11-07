@@ -25,7 +25,7 @@ Open `http://<your-computer-ip>:5175` (or `:8082`) on an iPad on the same Wi-Fi.
 
 ## Tech
 
-- **Vite + TypeScript, no UI framework.** Three.js (WebGL), loaded on demand when a level starts (`src/game/game.ts`, `world.ts`). Levels are data in `src/game/levels.ts`. Procedural low-poly dinosaurs with a shared walk/roar rig (`dinos.ts`, `species.ts`), an instanced jungle (one draw call per plant kind) with grid-based collisions, and a third-person chase camera.
+- **Vite + TypeScript, no UI framework.** Three.js (WebGL), loaded on demand when a level starts (`src/game/game.ts`, `world.ts`). Levels are data in `src/game/levels.ts`. Procedural dinosaurs with no asset files: smooth skinned bodies swept along the spine, jointed legs and skin textures painted in code (`dinos.ts`, `species.ts`); a storm with GPU rain, lightning and thunder (`weather.ts`); an instanced jungle (one draw call per plant kind) with grid-based collisions, and a third-person chase camera.
 - `src/engine/audio.ts` synthesizes every sound effect with Web Audio and handles iOS audio unlocking and speech.
 - The title screen, story screens and HUD are plain DOM with transform/opacity-only CSS animations.
 

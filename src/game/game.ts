@@ -8,18 +8,21 @@ import { CAGE, CAGE_HITS, CAR_COLORS, createCage, createCar, createPerson, dispo
 import { HERO, type Goal, type LevelDef } from './levels';
 import { unlockDino, unlockedDinos } from './progress';
 import { clock, M as STRINGS, S } from './strings';
+import { createWeather, STORM } from './weather';
 import './dino.css';
 
 /** Jeeps (each with a person beside it) in Rampage, respawned once all are wrecked and scared. */
 const RAMPAGE_TARGETS = 10;
 const NPCS = 6;
-/** Overcast storm light until the full weather arrives. */
-const SKY = '#8d9aa1';
+/** Fog and clear colour: the storm's horizon. */
+const SKY = STORM.horizon;
+/** Base light levels; lightning adds to them. */
+const LIGHT = { hemi: 1.5, sun: 1.6, flashHemi: 3.5 };
 /** Mouse look: radians per pixel, and how far the camera tilts up or down. */
 const LOOK = 0.0028;
 const PITCH = { min: -0.45, max: 0.7 };
 /** Third-person camera: behind and above the dinosaur, looking a little ahead of it. */
-const CHASE = { back: 12, up: 12, look: 2, ahead: 9 };
+const CHASE = { back: 13, up: 7.5, look: 3.2, ahead: 9 };
 /** Joystick reach in CSS pixels: the further up from where the finger landed, the faster. */
 const STICK = 100;
 const GRAVITY = 34;
@@ -55,6 +58,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.3;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   const canvas = renderer.domElement;
@@ -62,11 +66,12 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   root.appendChild(canvas);
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(SKY);
-  scene.fog = new THREE.Fog(SKY, 35, 125);
+  scene.fog = new THREE.Fog(SKY, 22, 115);
   const camera = new THREE.PerspectiveCamera(55, 1, 0.3, 220);
-  scene.add(new THREE.HemisphereLight('#c9d6dc', '#3a4a30', 1.1));
-  const sun = new THREE.DirectionalLight('#e8e4da', 1.6);
+  // Storm light: a flat grey sky overhead and a weak, cool key light through the clouds.
+  const hemi = new THREE.HemisphereLight('#b4c2ca', '#4a5040', LIGHT.hemi);
+  scene.add(hemi);
+  const sun = new THREE.DirectionalLight('#c9d2d8', LIGHT.sun);
   sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024);
   Object.assign(sun.shadow.camera, { left: -45, right: 45, top: 45, bottom: -45, near: 1, far: 150 });
@@ -76,6 +81,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
 
   const world = buildWorld();
   scene.add(world.group);
+  const weather = createWeather(scene);
   const placeRand = rng(Date.now() & 0xffff);
   const extra: { dispose(): void }[] = [];
   const keep = <T extends { dispose(): void }>(x: T) => (extra.push(x), x);
@@ -159,8 +165,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     for (let k = 0; k < CAGE_HITS; k++) cage.bump(3);
     free = true;
     const out = cage.exit!;
-    const x = CAGE.x + out.x * (CAGE.half + 8);
-    const z = CAGE.z + out.z * (CAGE.half + 8);
+    // Far enough out that the chase camera starts clear of the bars.
+    const x = CAGE.x + out.x * (CAGE.half + 16);
+    const z = CAGE.z + out.z * (CAGE.half + 16);
     heading = camYaw = Math.atan2(out.x, out.z);
     player!.root.position.set(x, groundY(x, z), z);
     player!.root.rotation.y = heading;
@@ -379,8 +386,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   // ---- Picker, with pictures rendered from the real models ----
   function renderThumbs(list: DinoSpec[]) {
     const s = new THREE.Scene();
-    s.add(new THREE.HemisphereLight('#ffffff', '#88aa66', 2.2));
-    const l = new THREE.DirectionalLight('#ffffff', 1.6);
+    s.add(new THREE.HemisphereLight('#ffffff', '#6a7060', 3.2));
+    const l = new THREE.DirectionalLight('#ffffff', 2.6);
     l.position.set(4, 8, 6);
     s.add(l);
     const cam = new THREE.PerspectiveCamera(30, 4 / 3, 0.1, 100);
@@ -803,7 +810,11 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       else if (speed > 0.6) heading = turnToward(heading, Math.atan2(vel.x, vel.z), dt * 9);
       player.root.rotation.y = heading;
       const move = THREE.MathUtils.clamp(speed / spec.speed, 0, 1);
-      if (animate(player, dt, grounded ? move : 0, t) && grounded && (spec.id === 'trex' || spec.id === 'brachio')) sfx.step(spec.id === 'brachio' ? 1.2 : 0.8);
+      // Heavy footfalls: a thud, and the camera shakes with each one.
+      if (animate(player, dt, grounded ? move : 0, t) && grounded && (spec.id === 'trex' || spec.id === 'brachio')) {
+        sfx.step(spec.id === 'brachio' ? 1.4 : 1.1);
+        shake = Math.max(shake, 0.18 * move);
+      }
       player.root.rotation.x = grounded ? 0 : spec.fly ? THREE.MathUtils.clamp(Math.hypot(vel.x, vel.z) / spec.fly! * 0.25 - vy * 0.01, -0.3, 0.35) : THREE.MathUtils.clamp(-vy * 0.012, -0.2, 0.2);
       rippleIn -= dt;
       if (wet && speed > 1 && rippleIn <= 0) {
@@ -890,6 +901,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     camera.position.copy(camPos);
     if (shake > 0) camera.position.add(new THREE.Vector3((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake, 0));
     camera.lookAt(camAt);
+    weather.update(dt, camera);
+    hemi.intensity = LIGHT.hemi + weather.flash * LIGHT.flashHemi;
+    sun.intensity = LIGHT.sun * (1 - weather.flash * 0.5);
     const ground = player ? player.root.position : camAt;
     sun.position.copy(ground).add(new THREE.Vector3(28, 50, 18));
     sun.target.position.copy(ground);
@@ -1045,6 +1059,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     clearTimeout(radioTimer);
     clearTimeout(toastTimer);
     ro.disconnect();
+    weather.dispose();
     world.dispose();
     extra.forEach((x) => x.dispose());
     disposeDinoAssets();

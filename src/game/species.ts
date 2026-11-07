@@ -16,13 +16,13 @@ export interface DinoSpec {
 }
 
 export const DINOS: DinoSpec[] = [
-  { id: 'trex', name: { en: 'T-Rex', da: 'T-Rex' }, speed: 15, cam: 1, roar: 1.2, colors: { body: '#4caf50', belly: '#d4edb0', accent: '#2e7d32' } },
-  { id: 'tri', name: { en: 'Triceratops', da: 'Triceratops' }, speed: 12, cam: 1, roar: 1, colors: { body: '#ff9433', belly: '#ffe0b2', accent: '#ffcf5c' } },
-  { id: 'stego', name: { en: 'Stegosaurus', da: 'Stegosaurus' }, speed: 11, cam: 1, roar: 0.9, colors: { body: '#9575cd', belly: '#e1d5f5', accent: '#ff8fb1' } },
-  { id: 'brachio', name: { en: 'Brachiosaurus', da: 'Brachiosaurus' }, speed: 11, cam: 1.35, roar: 1.6, colors: { body: '#42a5f5', belly: '#c7e6fd', accent: '#1e6fbf' } },
+  { id: 'trex', name: { en: 'T-Rex', da: 'T-Rex' }, speed: 15, cam: 1.2, roar: 1.3, colors: { body: '#75644a', belly: '#b9aa8a', accent: '#3a2f22' } },
+  { id: 'tri', name: { en: 'Triceratops', da: 'Triceratops' }, speed: 12, cam: 1.1, roar: 1, colors: { body: '#6a5b47', belly: '#b6a688', accent: '#7a3a24' } },
+  { id: 'stego', name: { en: 'Stegosaurus', da: 'Stegosaurus' }, speed: 11, cam: 1.1, roar: 0.9, colors: { body: '#59654a', belly: '#b0aa88', accent: '#86402a' } },
+  { id: 'brachio', name: { en: 'Brachiosaurus', da: 'Brachiosaurus' }, speed: 11, cam: 1.5, roar: 1.6, colors: { body: '#6a675b', belly: '#b3ab95', accent: '#46443b' } },
   // Velociraptor × Spinosaurus: a raptor's legs and claws with a spinosaur's sail and snout. Twice the fastest.
-  { id: 'spino', name: { en: 'Spinoraptor', da: 'Spinoraptor' }, speed: 30, cam: 1.15, roar: 0.75, colors: { body: '#23a99a', belly: '#d9f5ef', accent: '#ff5a5f' } },
+  { id: 'spino', name: { en: 'Spinoraptor', da: 'Spinoraptor' }, speed: 30, cam: 1.0, roar: 0.75, colors: { body: '#4a524c', belly: '#aea793', accent: '#8a3424' } },
   // Slow on foot, the fastest of all in the air.
-  { id: 'ptera', name: { en: 'Pteranodon', da: 'Pteranodon' }, speed: 6, fly: 32, cam: 1.1, roar: 0.6, colors: { body: '#9c7b6b', belly: '#efdccb', accent: '#ff5a3c' } },
+  { id: 'ptera', name: { en: 'Pteranodon', da: 'Pteranodon' }, speed: 6, fly: 32, cam: 1.1, roar: 0.6, colors: { body: '#65523f', belly: '#c0b298', accent: '#8f3a24' } },
 ];
 

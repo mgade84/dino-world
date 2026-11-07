@@ -290,12 +290,14 @@ export const sfx = {
   whoosh() {
     voice('sine', 900, 0.15, 0.35, 0, 140);
   },
-  /** Dinosaur roar: a deep growl that swells and falls, with breath. `size` > 1 is deeper. */
+  /** Dinosaur roar: a long, deep bellow that swells and falls, with a ragged breath through it. `size` > 1 is deeper. */
   roar(size = 1) {
-    voice('sawtooth', 120 / size, 0.2, 1.3, 0, 58 / size, 0.18);
-    voice('square', 90 / size, 0.1, 1.2, 0.03, 46 / size, 0.15);
-    voice('sawtooth', 240 / size, 0.06, 0.9, 0.05, 110 / size, 0.2);
-    noise(1.2, 0.22, 'lowpass', 800);
+    voice('sawtooth', 96 / size, 0.22, 1.9, 0, 46 / size, 0.28);
+    voice('sawtooth', 99 / size, 0.12, 1.8, 0.02, 48 / size, 0.3);
+    voice('square', 68 / size, 0.1, 1.7, 0.04, 36 / size, 0.3);
+    voice('sawtooth', 190 / size, 0.05, 1.4, 0.08, 92 / size, 0.25);
+    noise(1.9, 0.3, 'lowpass', 520);
+    noise(1.3, 0.14, 'bandpass', 1100, 0.12);
   },
   /** One beat of big leathery wings. */
   flap() {
@@ -324,10 +326,10 @@ export const sfx = {
     voice('sine', f, 0.12, 0.45, 0, f * 1.6, 0.02);
     voice('triangle', f * 1.5, 0.05, 0.4, 0.02, f * 2.2, 0.02);
   },
-  /** A soft footstep, for big animals. */
+  /** A heavy footfall: a low thump you feel more than hear. */
   step(size = 1) {
-    noise(0.18, 0.12 * size, 'lowpass', 160);
-    voice('sine', 70, 0.12 * size, 0.16, 0, 45);
+    noise(0.3, 0.2 * size, 'lowpass', 120);
+    voice('sine', 52, 0.22 * size, 0.32, 0, 30);
   },
   /** Engine revving: two short blips, then a long rising growl. */
   vroom() {

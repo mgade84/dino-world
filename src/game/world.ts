@@ -73,6 +73,38 @@ export interface World {
   dispose(): void;
 }
 
+/** Pushes each vertex in or out a little (the same amount for vertices that share a position), for organic shapes. */
+function lumpy(geo: THREE.BufferGeometry, amount: number, seed: number) {
+  const p = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    const n = Math.sin(v.x * 3.1 + seed) * Math.sin(v.y * 2.7 + seed * 1.3) * Math.sin(v.z * 3.3 + seed * 0.7);
+    v.multiplyScalar(1 + n * amount);
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** A palm leaf: a strip from the crown (z = 0) to the tip (z = 1) that tapers and droops. */
+function leafGeometry() {
+  const geo = new THREE.PlaneGeometry(1, 1, 2, 8);
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, 0, 0.5);
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const z = p.getZ(i);
+    const x = p.getX(i);
+    const taper = Math.sin(Math.min(1, z * 1.15) * Math.PI) * 0.9 + 0.1;
+    p.setX(i, x * taper);
+    // Droop, with a fold along the midrib.
+    p.setY(i, -z * z * 0.42 + Math.abs(x) * taper * 0.12);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
 export function buildWorld(): World {
   const rand = rng(7);
   const group = new THREE.Group();
@@ -111,11 +143,12 @@ export function buildWorld(): World {
   groundGeo.rotateX(-Math.PI / 2);
   const pos = groundGeo.attributes.position;
   const col = new Float32Array(pos.count * 3);
-  const grassA = new THREE.Color('#5cae3d');
-  const grassB = new THREE.Color('#3f8f34');
-  const dirt = new THREE.Color('#b8a06a');
-  const sand = new THREE.Color('#e8d7a0');
-  const rock = new THREE.Color('#8c7158');
+  // Rain-soaked: dark grass, muddy tracks, wet sand and slick rock.
+  const grassA = new THREE.Color('#3d5a2e');
+  const grassB = new THREE.Color('#2b4524');
+  const dirt = new THREE.Color('#4f4232');
+  const sand = new THREE.Color('#7d7058');
+  const rock = new THREE.Color('#544a40');
   const tmp = new THREE.Color();
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);
@@ -132,20 +165,20 @@ export function buildWorld(): World {
   }
   groundGeo.setAttribute('color', new THREE.BufferAttribute(col, 3));
   groundGeo.computeVertexNormals();
-  const ground = new THREE.Mesh(groundGeo, lambert({ vertexColors: true, flatShading: true }));
+  const ground = new THREE.Mesh(groundGeo, keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78 })));
   ground.receiveShadow = true;
   group.add(ground);
 
   // ---- Lake, with lily pads ----
   const lakeGeo = keep(new THREE.CircleGeometry(LAKE.r, 48));
   lakeGeo.rotateX(-Math.PI / 2);
-  const water = new THREE.Mesh(lakeGeo, keep(new THREE.MeshStandardMaterial({ color: '#3fa9e0', roughness: 0.15, metalness: 0.1, transparent: true, opacity: 0.92 })));
+  const water = new THREE.Mesh(lakeGeo, keep(new THREE.MeshStandardMaterial({ color: '#2c4146', roughness: 0.08, metalness: 0.3, transparent: true, opacity: 0.94 })));
   water.position.set(LAKE.x, 0.04, LAKE.z);
   water.receiveShadow = true;
   group.add(water);
 
   // ---- Volcano, with a glowing crater and puffs of smoke ----
-  const volcano = new THREE.Mesh(keep(new THREE.CylinderGeometry(5, VOLCANO.r, 24, 18, 1, true)), lambert({ color: '#7a5a48', flatShading: true }));
+  const volcano = new THREE.Mesh(keep(new THREE.CylinderGeometry(5, VOLCANO.r, 24, 18, 1, true)), lambert({ color: '#3e3430', flatShading: true }));
   const vy = groundY(VOLCANO.x, VOLCANO.z) - 1;
   volcano.position.set(VOLCANO.x, vy + 12, VOLCANO.z);
   volcano.castShadow = volcano.receiveShadow = true;
@@ -153,7 +186,7 @@ export function buildWorld(): World {
   lava.rotation.x = -Math.PI / 2;
   lava.position.set(VOLCANO.x, vy + 23.6, VOLCANO.z);
   group.add(volcano, lava);
-  const smokeMat = keep(new THREE.MeshLambertMaterial({ color: '#cfc8c4', transparent: true, opacity: 0.6, depthWrite: false }));
+  const smokeMat = keep(new THREE.MeshLambertMaterial({ color: '#5c5a5a', transparent: true, opacity: 0.55, depthWrite: false }));
   const smokeGeo = keep(new THREE.IcosahedronGeometry(1, 1));
   const smoke = Array.from({ length: 7 }, (_, i) => {
     const m = new THREE.Mesh(smokeGeo, smokeMat);
@@ -188,7 +221,7 @@ export function buildWorld(): World {
   const bushes: { p: V3; s: V3; r?: V3; c: string }[] = [];
   const rocks: { p: V3; s: V3; r: V3; c: string }[] = [];
   const flowers: { p: V3; s: V3; c: string }[] = [];
-  const greens = ['#2e8b3a', '#3c9e43', '#2a7a35', '#4caf50', '#378e3c'];
+  const greens = ['#2c4a28', '#35532c', '#283f24', '#3d5a30', '#2f4a2a'];
   const pick = <T>(a: T[]) => a[Math.floor(rand() * a.length)];
 
   function tree(x: number, z: number, scale: number) {
@@ -202,7 +235,7 @@ export function buildWorld(): World {
       const n = 7;
       for (let k = 0; k < n; k++) {
         const a = (k / n) * Math.PI * 2 + rand();
-        fronds.push({ p: [top[0] + Math.sin(a) * 1.2, top[1] - 0.3, top[2] + Math.cos(a) * 1.2], s: [0.75, 0.1, 2.6], r: [0.5, a, 0], c: pick(greens) });
+        fronds.push({ p: [top[0], top[1] - 0.1, top[2]], s: [0.9, 2.6, 3.2], r: [-0.15 + rand() * 0.2, a, 0], c: pick(greens) });
       }
       addCollider({ x, z, r: 0.9 });
     } else {
@@ -239,7 +272,7 @@ export function buildWorld(): World {
     const z = (rand() * 2 - 1) * (HALF + 8);
     if (inLake(x, z, 1) || blocked(x, z, 1) || slopeAt(x, z) > 0.7) continue;
     const s = 0.7 + rand() * 1.1;
-    bushes.push({ p: [x, groundY(x, z) + s * 0.15, z], s: [s * 1.3, s * 0.5, s * 1.2], r: [0, rand() * 3, 0], c: pick(greens) });
+    bushes.push({ p: [x, groundY(x, z) + s * 0.15, z], s: [s * 1.3, s * 0.6, s * 1.2], r: [0, rand() * 3, 0], c: pick(greens) });
     n++;
   }
   for (let n = 0, tries = 0; n < 70 && tries < 2000; tries++) {
@@ -247,31 +280,23 @@ export function buildWorld(): World {
     const z = (rand() * 2 - 1) * HALF;
     if (Math.hypot(x, z) < 14 || inLake(x, z, 2) || blocked(x, z, 3)) continue;
     const s = 0.6 + rand() * 1.8;
-    rocks.push({ p: [x, groundY(x, z) + s * 0.15, z], s: [s * 1.3, s, s * 1.1], r: [rand(), rand() * 3, rand()], c: pick(['#8d8a86', '#a19c95', '#77736e']) });
+    rocks.push({ p: [x, groundY(x, z) + s * 0.15, z], s: [s * 1.3, s, s * 1.1], r: [rand(), rand() * 3, rand()], c: pick(['#57544f', '#64605a', '#4a4743']) });
     if (s > 1.3) addCollider({ x, z, r: s * 1.1 });
     n++;
-  }
-  for (let n = 0; n < 260; n++) {
-    const x = (rand() * 2 - 1) * HALF;
-    const z = (rand() * 2 - 1) * HALF;
-    if (inLake(x, z, 1)) continue;
-    flowers.push({ p: [x, groundY(x, z) + 0.2, z], s: [0.28, 0.28, 0.28], c: pick(['#ff5d8f', '#ffd166', '#ffffff', '#b388ff', '#ff9f1c']) });
   }
   for (let n = 0; n < 14; n++) {
     const a = rand() * Math.PI * 2;
     const d = rand() * (LAKE.r - 3);
-    flowers.push({ p: [LAKE.x + Math.cos(a) * d, 0.08, LAKE.z + Math.sin(a) * d], s: [1.1, 0.05, 1.1], c: '#5fbf4a' });
+    flowers.push({ p: [LAKE.x + Math.cos(a) * d, 0.08, LAKE.z + Math.sin(a) * d], s: [1.1, 0.05, 1.1], c: '#34502c' });
   }
 
   const flat = { flatShading: true };
-  instanced(new THREE.CylinderGeometry(1, 1, 1, 7), lambert({ color: '#7b5434', ...flat }), trunks);
-  instanced(new THREE.IcosahedronGeometry(1, 0), lambert({ color: '#ffffff', ...flat }), canopies);
-  const frondGeo = new THREE.BoxGeometry(1, 1, 1);
-  frondGeo.translate(0, 0, 0.45);
-  instanced(frondGeo, lambert({ color: '#ffffff', ...flat }), fronds);
-  instanced(new THREE.IcosahedronGeometry(1, 0), lambert({ color: '#ffffff', ...flat }), bushes);
-  instanced(new THREE.DodecahedronGeometry(1, 0), lambert({ color: '#ffffff', ...flat }), rocks);
-  instanced(new THREE.SphereGeometry(1, 6, 4), lambert({ color: '#ffffff' }), flowers, false);
+  instanced(new THREE.CylinderGeometry(0.8, 1, 1, 9), lambert({ color: '#3b3026' }), trunks);
+  instanced(lumpy(new THREE.IcosahedronGeometry(1, 2), 0.22, 11), lambert({ color: '#ffffff' }), canopies);
+  instanced(leafGeometry(), lambert({ color: '#ffffff', side: THREE.DoubleSide }), fronds);
+  instanced(lumpy(new THREE.IcosahedronGeometry(1, 1), 0.25, 12), lambert({ color: '#ffffff' }), bushes);
+  instanced(lumpy(new THREE.DodecahedronGeometry(1, 1), 0.18, 13), lambert({ color: '#ffffff', ...flat }), rocks);
+  instanced(new THREE.CircleGeometry(1, 10).rotateX(-Math.PI / 2), lambert({ color: '#ffffff' }), flowers, false);
 
   const vt = new THREE.Vector3();
   return {
