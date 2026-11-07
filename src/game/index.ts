@@ -20,6 +20,7 @@ function goalText(g: Goal) {
     case 'smash': return `${S().goalSmash} ×${g.n}`;
     case 'scare': return `${S().goalScare} ×${g.n}`;
     case 'free': return `${S().goalFree} ×${g.n}`;
+    case 'destroy': return `${S().goalDestroy} ×${g.n}`;
   }
 }
 

@@ -278,6 +278,28 @@ export const sfx = {
     voice('square', 1200, 0.05, 0.08, 0.2);
     noise(0.04, 0.12, 'highpass', 3000, 0.28);
   },
+  /** A tranquilliser rifle: a compressed-air pop. */
+  dartShot() {
+    noise(0.08, 0.22, 'bandpass', 1800);
+    voice('sine', 300, 0.08, 0.06, 0, 120);
+  },
+  /** A dart striking hide: a sharp thwack. */
+  dartHit() {
+    noise(0.05, 0.35, 'highpass', 2200);
+    voice('triangle', 520, 0.15, 0.12, 0, 260);
+  },
+  /** An electric fence: a crackling buzz. */
+  zap() {
+    voice('sawtooth', 120, 0.18, 0.5, 0, 90);
+    voice('square', 240, 0.08, 0.45, 0, 180);
+    for (let i = 0; i < 5; i++) noise(0.04, 0.3, 'highpass', 3000, i * 0.08 + Math.random() * 0.04);
+  },
+  /** A building coming down: a deep rumble under cascading crunches. */
+  collapse() {
+    noise(2.2, 0.45, 'lowpass', 260);
+    voice('sine', 48, 0.3, 1.6, 0, 30);
+    for (let i = 0; i < 7; i++) noise(0.18, 0.25, 'bandpass', 800 + Math.random() * 1400, 0.1 + i * 0.22);
+  },
   /** Distant thunder: a crack, then a long low rumble. */
   thunder() {
     noise(0.25, 0.35, 'lowpass', 1400);

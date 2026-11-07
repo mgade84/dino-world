@@ -2,10 +2,10 @@
 
 A 3D dinosaur breakout for ages 12 and up. A tropical storm knocks out the power at Primordia, Halcyon Genetics' dinosaur park on Kessick Island, and Specimen T-07, a T-Rex, gets its chance.
 
-- **Story:** a chain of levels, each with a mission brief, objectives and park-radio chatter. Break out of Paddock 7 before the backup power returns, wreck the security jeeps and scatter the work crews on the service roads, then free the caged dinosaurs on Main Street. Levels 4 (*Blackout*) and 5 (*Last Boat*) are still being built.
+- **Story:** a chain of levels, each with a mission brief, objectives and park-radio chatter. Break out of Paddock 7 before the backup power returns, wreck the security jeeps and scatter the work crews on the service roads, then free the caged dinosaurs and bring down the buildings on Main Street. Rangers fire tranquilliser darts (dodge them, or charge and scatter them), live electric fences throw you back, and if your energy runs out you're sedated and wake at the last checkpoint. Levels 4 (*Blackout*) and 5 (*Last Boat*) are still being built.
 - **Rampage:** free play on the island with no objectives, for any dinosaur you've freed in the story. It unlocks after level 1.
 
-People get scared, knocked over and run; nobody gets hurt. iPad-first (touch), and it also plays with keyboard and mouse: WASD to move, mouse to look, click to roar or bite, Space to jump, Esc to pause. Offline-capable web game. No ads, no network calls, no tracking. It started as a game in [Mini Mix](https://github.com/mgade84/mini-mix) and shares its shell.
+People get scared, knocked flat and run; nobody gets hurt. iPad-first (touch), and it also plays with keyboard and mouse: WASD to move, mouse to look, click to roar or bite, Space to jump, Esc to pause. Offline-capable web game. No ads, no network calls, no tracking. It started as a game in [Mini Mix](https://github.com/mgade84/mini-mix) and shares its shell.
 
 **Settings** (hold ⚙️ on the title screen for 3 seconds): language (English or Danish, defaults to the device language), sound on/off, reset story progress, and *Refresh app* (clears the offline cache and reloads the newest version).
 

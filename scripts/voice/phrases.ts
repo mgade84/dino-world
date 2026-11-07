@@ -20,8 +20,10 @@ const add = (...texts: (string | undefined)[]) => texts.forEach((t) => t && out.
 // Park radio: every story level's lines (spoken through radio() in game.ts).
 for (const lv of LEVELS) {
   const r = lv.radio;
-  add(r.start.da, r.done.da, r.fail?.da, r.escaped?.da);
+  add(r.start.da, r.done.da, r.fail?.da, r.escaped?.da, r.spotted?.da);
 }
+// Radio call when the dinosaur is sedated.
+add(dino.da.radioSedated);
 // Radio call when a caged dinosaur breaks free.
 add(...DINOS.map((d) => dino.da.freed(d.name.da)));
 

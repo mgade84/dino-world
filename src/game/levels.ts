@@ -9,7 +9,8 @@ export type Goal =
   | { kind: 'escape' }
   | { kind: 'smash'; n: number }
   | { kind: 'scare'; n: number }
-  | { kind: 'free'; n: number };
+  | { kind: 'free'; n: number }
+  | { kind: 'destroy'; n: number };
 
 export interface LevelDef {
   id: string;
@@ -24,8 +25,12 @@ export interface LevelDef {
   start: 'cage' | 'free';
   /** Seconds to finish, or none. */
   timeLimit?: number;
-  /** Park radio, shown as subtitles and spoken. */
-  radio: { start: Txt; done: Txt; fail?: Txt; escaped?: Txt };
+  /** Rangers with tranquilliser rifles on the island. */
+  rangers?: number;
+  /** The perimeter fences: live (zap) or dead (can be torn down). Absent: no fences. */
+  fences?: 'live' | 'dead';
+  /** Park radio, shown as subtitles and spoken. `spotted` plays when a ranger first sees the dinosaur. */
+  radio: { start: Txt; done: Txt; fail?: Txt; escaped?: Txt; spotted?: Txt };
   /** False for levels still being built: shown in the list, but locked. */
   ready: boolean;
 }
@@ -63,8 +68,11 @@ export const LEVELS: LevelDef[] = [
     },
     goals: [{ kind: 'smash', n: 6 }, { kind: 'scare', n: 8 }],
     start: 'free',
+    rangers: 3,
+    fences: 'live',
     radio: {
       start: { en: 'Security to all crews. Return to the visitor centre now.', da: 'Sikkerhed til alle hold. Vend tilbage til besøgscentret nu.' },
+      spotted: { en: 'Ranger team, target in sight. Darts only. Take the shot!', da: 'Vagthold, målet er i sigte. Kun pile. Skyd!' },
       done: { en: 'We have lost the east roads. Fall back to Main Street!', da: 'Vi har mistet østvejene. Træk jer tilbage til hovedgaden!' },
     },
     ready: true,
@@ -74,13 +82,16 @@ export const LEVELS: LevelDef[] = [
     name: { en: 'Main Street', da: 'Hovedgaden' },
     place: { en: 'Visitor centre', da: 'Besøgscentret' },
     brief: {
-      en: 'Guests are being herded towards the visitor centre to wait out the storm. Halcyon keeps more animals in cages nearby. Break them out and empty the streets.',
-      da: 'Gæsterne bliver ført hen til besøgscentret for at vente stormen af. Halcyon holder flere dyr i bure tæt ved. Bryd dem ud og tøm gaderne.',
+      en: 'Guests are being herded to Main Street, west of the paddocks, to wait out the storm. Halcyon keeps more animals in cages nearby. Break them out, bring the buildings down and empty the streets.',
+      da: 'Gæsterne bliver ført hen til hovedgaden, vest for indhegningerne, for at vente stormen af. Halcyon holder flere dyr i bure tæt ved. Bryd dem ud, vælt bygningerne og tøm gaderne.',
     },
-    goals: [{ kind: 'free', n: 2 }, { kind: 'scare', n: 10 }, { kind: 'smash', n: 4 }],
+    goals: [{ kind: 'free', n: 2 }, { kind: 'destroy', n: 3 }, { kind: 'scare', n: 10 }, { kind: 'smash', n: 4 }],
     start: 'free',
+    rangers: 5,
+    fences: 'live',
     radio: {
       start: { en: 'Attention, guests. Please remain calm and stay indoors.', da: 'Kære gæster. Bevar roen og bliv indendørs.' },
+      spotted: { en: 'All rangers to Main Street. Bring it down, but do not kill it!', da: 'Alle vagter til hovedgaden. Bedøv den, men dræb den ikke!' },
       done: { en: 'More animals are loose! Get everyone to the docks!', da: 'Flere dyr er sluppet løs! Få alle ned til havnen!' },
     },
     ready: true,

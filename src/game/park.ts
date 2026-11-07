@@ -310,13 +310,22 @@ export interface Person {
   legs: THREE.Object3D[];
   arms: THREE.Object3D[];
   alert: THREE.Sprite;
-  state: 'idle' | 'panic' | 'gone';
+  /** idle: standing about (or, for rangers, walking a patrol); panic: running; down: knocked over; gone: run off. */
+  state: 'idle' | 'panic' | 'down' | 'gone';
   /** Seconds in the current state. */
   t: number;
   heading: number;
   vel: THREE.Vector3;
   phase: number;
+  kind: 'visitor' | 'ranger';
+  /** Rangers: 0..1 rifle raised to the shoulder. */
+  aim: number;
 }
+
+/** How long a knocked-down person lies there before scrambling up and running. */
+const DOWN_FOR = 2.6;
+/** Seconds of running before a person has fled out of the action. */
+const RUN_FOR = 9;
 
 let alertTex: THREE.CanvasTexture | null = null;
 function alertMaterial() {
@@ -339,69 +348,117 @@ function alertMaterial() {
   return new THREE.SpriteMaterial({ map: alertTex, depthTest: false });
 }
 
-/** A park visitor in a safari hat, about 2.5 units tall (a bit bigger than life, so small kids spot them). */
-export function createPerson(rand: () => number): Person {
+/**
+ * A park visitor in a safari hat, or a park ranger in uniform with a tranquilliser rifle. About 2.5 units
+ * tall. Faces +z; rotation order YXZ so a fall (rotation.x) tips it over its own back.
+ */
+export function createPerson(rand: () => number, kind: Person['kind'] = 'visitor'): Person {
   const pick = <T>(a: T[]) => a[Math.floor(rand() * a.length)];
+  const ranger = kind === 'ranger';
   const g = new THREE.Group();
+  g.rotation.order = 'YXZ';
   const body = group(g);
   body.scale.setScalar(1.4);
-  const shirt = mat(pick(SHIRTS));
-  const pants = mat(pick(PANTS));
+  const shirt = mat(ranger ? '#4a5638' : pick(SHIRTS));
+  const pants = mat(ranger ? '#33382c' : pick(PANTS));
   const skin = mat(pick(SKIN));
   const legs = [-0.14, 0.14].map((x) => {
     const pivot = group(body, [x, 0.9, 0]);
     part(pivot, GEO.cyl, pants, [0.12, 0.88, 0.12], [0, -0.44, 0]);
-    part(pivot, GEO.box, mat('#4a3626'), [0.18, 0.1, 0.3], [0, -0.88, 0.05]);
+    part(pivot, GEO.box, mat(ranger ? '#1f1a16' : '#4a3626'), [0.18, 0.12, 0.3], [0, -0.88, 0.05]);
     return pivot;
   });
   part(body, GEO.box, shirt, [0.56, 0.72, 0.32], [0, 1.28, 0]);
+  if (ranger) {
+    // Utility vest and belt.
+    part(body, GEO.box, mat('#2a2f24'), [0.6, 0.42, 0.36], [0, 1.38, 0]);
+    part(body, GEO.box, mat('#1e1c19'), [0.58, 0.08, 0.34], [0, 0.94, 0]);
+  }
   const arms = [-0.37, 0.37].map((x) => {
     const pivot = group(body, [x, 1.6, 0]);
     part(pivot, GEO.cyl, shirt, [0.085, 0.36, 0.085], [0, -0.16, 0]);
     part(pivot, GEO.cyl, skin, [0.075, 0.32, 0.075], [0, -0.48, 0]);
     return pivot;
   });
+  if (ranger) {
+    // The tranquilliser rifle, held in the right hand along the arm.
+    const rifle = group(arms[1], [-0.05, -0.6, 0.1]);
+    part(rifle, GEO.box, mat('#22211f'), [0.08, 0.1, 0.95], [0, 0, 0.2]);
+    part(rifle, GEO.cyl, mat('#3a3a38'), [0.03, 0.5, 0.03], [0, 0.03, 0.85], [Math.PI / 2, 0, 0]);
+    part(rifle, GEO.box, mat('#4a3a2a'), [0.07, 0.18, 0.3], [0, -0.08, -0.25]);
+  }
   part(body, GEO.sphere, skin, [0.21, 0.23, 0.21], [0, 1.88, 0]);
   for (const x of [-0.08, 0.08]) part(body, GEO.sphere, mat('#1b1b1b'), [0.03, 0.035, 0.03], [x, 1.91, 0.19]);
-  const hat = mat('#cdb27a');
-  part(body, GEO.cyl, hat, [0.34, 0.03, 0.34], [0, 2.05, 0]);
-  part(body, GEO.cyl, hat, [0.19, 0.16, 0.19], [0, 2.13, 0]);
+  if (ranger) {
+    const cap = mat('#2b3024');
+    part(body, GEO.cyl, cap, [0.22, 0.1, 0.22], [0, 2.05, 0]);
+    part(body, GEO.box, cap, [0.3, 0.03, 0.2], [0, 2.01, 0.16]);
+  } else {
+    const hat = mat('#cdb27a');
+    part(body, GEO.cyl, hat, [0.34, 0.03, 0.34], [0, 2.05, 0]);
+    part(body, GEO.cyl, hat, [0.19, 0.16, 0.19], [0, 2.13, 0]);
+  }
   const alert = new THREE.Sprite(alertMaterial());
   owned.push(alert.material);
   alert.scale.setScalar(1.1);
-  alert.renderOrder = 10; // drawn after the see-through sea surface, so it stays bright red
+  alert.renderOrder = 10;
   alert.position.y = 4;
+  // Kept for the panic bob, but not shown: a cartoon "!" doesn't suit the game any more.
   alert.visible = false;
-  g.add(alert);
-  return { group: g, legs, arms, alert, state: 'idle', t: 0, heading: rand() * 6, vel: new THREE.Vector3(), phase: rand() * 6 };
+  return { group: g, legs, arms, alert, state: 'idle', t: 0, heading: rand() * 6, vel: new THREE.Vector3(), phase: rand() * 6, kind, aim: 0 };
 }
 
-/** Idle fidgeting and waving, or arms-up panicked running. `speed` is how fast it is moving. */
+/**
+ * Poses for each state: standing about (visitors fidget and wave; rangers walk their patrol or raise
+ * the rifle), arms-up running in a panic, and lying flat after being knocked over. `speed` is how fast
+ * it is moving.
+ */
 export function posePerson(p: Person, dt: number, t: number, speed: number) {
   p.t += dt;
+  const g = p.group;
+  if (p.state === 'down') {
+    // Topple over backwards, lie still, then scramble up and run.
+    const k = Math.min(1, p.t / 0.35);
+    g.rotation.x = -(Math.PI / 2 - 0.1) * k * k;
+    g.position.y += Math.sin(Math.PI * k) * 0.02;
+    p.legs.forEach((l, i) => (l.rotation.x = 0.3 * k * (i ? 1 : -0.5)));
+    p.arms.forEach((a, i) => a.rotation.set(-0.5 * k, 0, (i ? -1 : 1) * 1.2 * k));
+    if (p.t > DOWN_FOR) {
+      p.state = 'panic';
+      p.t = 0;
+      g.rotation.x = 0;
+    }
+    return;
+  }
+  g.rotation.x = 0;
   if (p.state === 'panic') {
     p.phase += dt * (6 + speed * 1.4);
     p.legs.forEach((l, i) => (l.rotation.x = Math.sin(p.phase + i * Math.PI) * 0.9));
     p.arms.forEach((a, i) => {
-      a.rotation.x = Math.PI - 0.3 + Math.sin(p.phase * 1.3 + i * Math.PI) * 0.35;
+      a.rotation.x = p.kind === 'ranger' ? -0.6 + Math.sin(p.phase + i * Math.PI) * 0.5 : Math.PI - 0.3 + Math.sin(p.phase * 1.3 + i * Math.PI) * 0.35;
       a.rotation.z = (i ? -1 : 1) * 0.25;
     });
     p.alert.position.y = 4 + Math.abs(Math.sin(t * 9)) * 0.3;
-    // Gone from view after a few seconds of running away.
-    if (p.t > 4.5) {
-      const s = Math.max(0, 1 - (p.t - 4.5) * 2);
-      p.group.scale.setScalar(s * (p.group.userData.scale ?? 1));
-      if (s <= 0) {
-        p.state = 'gone';
-        p.group.visible = false;
-      }
+    if (p.t > RUN_FOR) {
+      p.state = 'gone';
+      g.visible = false;
     }
   } else if (p.state === 'idle') {
-    p.legs.forEach((l) => (l.rotation.x = 0));
-    const wave = Math.sin(t * 0.7 + p.phase) > 0.85;
-    p.arms[0].rotation.set(0, 0, 0.08);
-    p.arms[1].rotation.set(wave ? Math.PI - 0.4 + Math.sin(t * 10) * 0.3 : 0, 0, -0.08);
-    p.group.rotation.y = p.heading + Math.sin(t * 0.5 + p.phase) * 0.6;
+    if (speed > 0.3) {
+      p.phase += dt * (4 + speed * 1.5);
+      p.legs.forEach((l, i) => (l.rotation.x = Math.sin(p.phase + i * Math.PI) * 0.55));
+    } else p.legs.forEach((l) => (l.rotation.x = 0));
+    if (p.kind === 'ranger') {
+      // Rifle carried low, or raised to the shoulder and pointed.
+      p.arms[0].rotation.set(-0.2 - p.aim * 1.25, 0.35 * p.aim, 0.1 + p.aim * 0.35);
+      p.arms[1].rotation.set(-0.35 - p.aim * 1.2, 0, -0.1);
+      g.rotation.y = p.heading;
+    } else {
+      const wave = Math.sin(t * 0.7 + p.phase) > 0.85;
+      p.arms[0].rotation.set(0, 0, 0.08);
+      p.arms[1].rotation.set(wave ? Math.PI - 0.4 + Math.sin(t * 10) * 0.3 : 0, 0, -0.08);
+      g.rotation.y = p.heading + (speed > 0.3 ? 0 : Math.sin(t * 0.5 + p.phase) * 0.6);
+    }
   }
 }
 
@@ -410,7 +467,20 @@ export function scare(p: Person): boolean {
   if (p.state !== 'idle') return false;
   p.state = 'panic';
   p.t = 0;
-  p.alert.visible = true;
+  return true;
+}
+
+/** Knocks a person flat, falling away from `from`. They get up after a moment and run. True if they were on their feet. */
+export function knockDown(p: Person, from: THREE.Vector3): boolean {
+  if (p.state === 'down' || p.state === 'gone') return false;
+  const q = p.group.position;
+  // Face the dinosaur, so falling backwards is falling away from it.
+  p.heading = Math.atan2(from.x - q.x, from.z - q.z);
+  p.group.rotation.y = p.heading;
+  p.state = 'down';
+  p.t = 0;
+  p.aim = 0;
+  p.vel.set(q.x - from.x, 0, q.z - from.z).normalize().multiplyScalar(5);
   return true;
 }
 

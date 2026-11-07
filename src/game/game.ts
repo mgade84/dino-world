@@ -4,7 +4,10 @@ import { say, sfx } from '../engine/audio';
 import { L, type Txt } from '../i18n';
 import { animate, buildDino, disposeDinoAssets, DINOS, type DinoSpec, type Rig } from './dinos';
 import { buildWorld, groundY, HALF, rng, CAGE_SPOTS } from './world';
-import { CAGE, CAGE_HITS, CAR_COLORS, createCage, createCar, createPerson, disposePark, posePerson, scare, updateCar, wreckCar, type Cage, type Car, type Person } from './park';
+import { CAGE, CAGE_HITS, CAR_COLORS, createCage, createCar, createPerson, disposePark, knockDown, posePerson, scare, updateCar, wreckCar, type Cage, type Car, type Person } from './park';
+import { createTown, type Building } from './buildings';
+import { createFences } from './fences';
+import { createSecurity } from './security';
 import { HERO, type Goal, type LevelDef } from './levels';
 import { unlockDino, unlockedDinos } from './progress';
 import { clock, M as STRINGS, S } from './strings';
@@ -14,6 +17,16 @@ import './dino.css';
 /** Jeeps (each with a person beside it) in Rampage, respawned once all are wrecked and scared. */
 const RAMPAGE_TARGETS = 10;
 const NPCS = 6;
+/** Rampage: rangers on the island. */
+const RAMPAGE_RANGERS = 4;
+/** Energy lost to a dart, and to a live fence. Energy comes back after a few seconds without a hit. */
+const DART_HIT = 14;
+const ZAP_HIT = 20;
+const REGEN = { after: 5, rate: 6 };
+/** Charging faster than this damages buildings and tears down dead fences. */
+const CHARGE = 5;
+/** Sedation: seconds until the screen is black, and until the dinosaur wakes at the checkpoint. */
+const SEDATE = { dark: 1.6, wake: 3.8 };
 /** Fog and clear colour: the storm's horizon. */
 const SKY = STORM.horizon;
 /** Base light levels; lightning adds to them. */
@@ -84,6 +97,10 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   const world = buildWorld();
   scene.add(world.group);
   const weather = createWeather(scene);
+  const town = createTown(scene);
+  // Story levels say whether there are fences; Rampage has them live.
+  const fenceMode = level ? level.fences : 'live';
+  const fences = fenceMode ? createFences(scene, fenceMode === 'live') : null;
   const placeRand = rng(Date.now() & 0xffff);
   const extra: { dispose(): void }[] = [];
   const keep = <T extends { dispose(): void }>(x: T) => (extra.push(x), x);
@@ -102,6 +119,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     ${story ? '' : `<button class="dn-btn dn-change" aria-label="${S().change}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 14-5.3V4h2v6h-6V8h2.8A6 6 0 1 0 18 12h2a8 8 0 0 1-16 0z"/></svg></button>`}
     <button class="dn-act dn-jump" aria-label="${S().jump}"><span>${S().jump}</span></button>
     <button class="dn-act dn-roar" aria-label="${S().roar}"><span>${S().roar}</span></button>
+    <div class="dn-energy" hidden><small>${S().energy}</small><i><b></b></i></div>
+    <div class="dn-hurt"></div>
+    <div class="dn-sedate"><h2>${S().sedated}</h2><p>${S().sedatedSub}</p></div>
     <div class="dn-radio" hidden><small>${S().radio}</small><p></p></div>
     <div class="dn-toast" hidden></div>
     <div class="dn-stick" hidden><i></i></div>
@@ -122,6 +142,10 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   const radioBox = hud.querySelector<HTMLElement>('.dn-radio')!;
   const toast = hud.querySelector<HTMLElement>('.dn-toast')!;
   const menu = hud.querySelector<HTMLElement>('.dn-menu')!;
+  const energyEl = hud.querySelector<HTMLElement>('.dn-energy')!;
+  const energyBar = energyEl.querySelector<HTMLElement>('b')!;
+  const hurt = hud.querySelector<HTMLElement>('.dn-hurt')!;
+  const sedateEl = hud.querySelector<HTMLElement>('.dn-sedate')!;
   const picker = hud.querySelector<HTMLElement>('.dn-pick')!;
   const stick = hud.querySelector<HTMLElement>('.dn-stick')!;
   const knob = stick.querySelector('i')!;
@@ -219,11 +243,11 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   spawnCaptives();
 
   // ---- Objectives ----
-  const count = { escape: 0, smash: 0, scare: 0, free: 0 };
+  const count = { escape: 0, smash: 0, scare: 0, free: 0, destroy: 0 };
   const goals: Goal[] = level?.goals ?? [];
   const goalNeed = (g: Goal) => (g.kind === 'escape' ? 1 : g.n);
   const GOAL_LABEL: Record<Goal['kind'], () => string> = {
-    escape: () => S().goalEscape, smash: () => S().goalSmash, scare: () => S().goalScare, free: () => S().goalFree,
+    escape: () => S().goalEscape, smash: () => S().goalSmash, scare: () => S().goalScare, free: () => S().goalFree, destroy: () => S().goalDestroy,
   };
   function renderGoals() {
     if (story) {
@@ -235,7 +259,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         })
         .join('');
     } else {
-      goalList.innerHTML = `<li>${S().wrecked} <b>${count.smash}</b></li><li>${S().scaredLabel} <b>${count.scare}</b></li><li>${S().freedLabel} <b>${count.free}</b></li>`;
+      goalList.innerHTML = `<li>${S().wrecked} <b>${count.smash}</b></li><li>${S().scaredLabel} <b>${count.scare}</b></li><li>${S().freedLabel} <b>${count.free}</b></li><li>${S().destroyedLabel} <b>${count.destroy}</b></li>`;
     }
   }
   const goalsMet = () => story && goals.every((g) => count[g.kind] >= goalNeed(g));
@@ -255,6 +279,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   }
   function progress(kind: keyof typeof count, n = 1) {
     count[kind] += n;
+    // Each step towards the goals is a checkpoint to wake up at if sedated.
+    if (player && free && grounded) checkpoint.copy(player.root.position);
     renderGoals();
     if (goalsMet()) finish(true);
     else if (!story && !respawning && cars.every((c) => c.wrecked) && people.every((pp) => pp.state !== 'idle')) {
@@ -350,6 +376,16 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       scene.add(person.group);
       people.push(person);
     });
+    // Main Street has its own crowd, on the pavements, wherever buildings are a goal (and in Rampage).
+    if (!level || goals.some((g) => g.kind === 'destroy')) {
+      for (let k = 0; k < 8; k++) {
+        const person = createPerson(placeRand);
+        person.group.position.copy(town.pavement(placeRand));
+        person.heading = placeRand() * Math.PI * 2;
+        scene.add(person.group);
+        people.push(person);
+      }
+    }
   }
 
   function frighten(pp: Person) {
@@ -548,10 +584,12 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
 
   /** Moves along the ground, sliding round trees and stopping at cliffs that are too steep. */
   const from = new THREE.Vector3();
-  function moveOnGround(p: THREE.Vector3, v: THREE.Vector3, dt: number, radius: number, airborne: boolean) {
+  /** Returns the building it pushed against, if any. */
+  function moveOnGround(p: THREE.Vector3, v: THREE.Vector3, dt: number, radius: number, airborne: boolean): Building | null {
     from.copy(p);
     p.addScaledVector(v, dt);
     world.collide(p, radius);
+    const building = town.collide(p, radius, v);
     const run = Math.hypot(p.x - from.x, p.z - from.z);
     const rise = groundY(p.x, p.z) - from.y;
     const tooSteep = airborne ? rise > 0.25 : run > 1e-4 && rise / run > CLIMB && rise > 0.05;
@@ -560,6 +598,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       p.z = from.z;
       v.multiplyScalar(0.3);
     }
+    return building;
   }
 
   /** The jump button: flyers fly while it is held, everyone else jumps. */
@@ -582,7 +621,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   /** How hard the last landing was, 0..1; the legs absorb it and it fades. */
   let landing = 0;
   function jump() {
-    if (!player || picking || paused || !grounded || windup >= 0) return;
+    if (!player || picking || paused || sedated > 0 || !grounded || windup >= 0) return;
     windup = 0;
   }
 
@@ -615,7 +654,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
 
   /** The roar button: bites the bars when close to them, otherwise roars. */
   function act() {
-    if (!player || picking || paused || player.roaring > 0 || player.biting > 0) return;
+    if (!player || picking || paused || sedated > 0 || player.roaring > 0 || player.biting > 0) return;
     const target = biteTarget();
     if (!target || !grounded) return roar();
     player.biting = 1;
@@ -639,11 +678,12 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   }
 
   function roar() {
-    if (!player || picking || paused || player.roaring > 0) return;
+    if (!player || picking || paused || sedated > 0 || player.roaring > 0) return;
     player.roaring = 1;
     sfx.roar(spec.roar);
     shake = 0.5;
     const p = player.root.position;
+    if (free) security?.roar(p, 26);
     if (!free) cage.rattle();
     else for (const pp of people) if (Math.hypot(pp.group.position.x - p.x, pp.group.position.z - p.z) < 24) frighten(pp);
     for (const n of npcs) {
@@ -697,6 +737,77 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   const right = new THREE.Vector3();
   let camYaw = 0;
   let t = 0;
+  // ---- Rangers, energy and sedation ----
+  const checkpoint = new THREE.Vector3();
+  let energy = 100;
+  let lastHit = -99;
+  /** Seconds since sedated, or 0 while awake. */
+  let sedated = 0;
+  let zapCool = 0;
+  const rangerCount = level ? level.rangers ?? 0 : RAMPAGE_RANGERS;
+  const hazards = rangerCount > 0 || fenceMode === 'live';
+  energyEl.hidden = !hazards;
+  const security = rangerCount > 0
+    ? createSecurity(
+        scene,
+        rangerCount,
+        () => spotAway(6, 40),
+        (q, r) => {
+          world.collide(q, r);
+          town.collide(q, r);
+          keepOut(q, r);
+        },
+        placeRand,
+        {
+          onHit: () => {
+            sfx.dartHit();
+            damage(DART_HIT);
+          },
+          onSpot: () => level?.radio.spotted && radio(level.radio.spotted),
+          onKnock: () => {
+            sfx.thud();
+            shake = Math.max(shake, 0.3);
+          },
+        },
+      )
+    : null;
+
+  function damage(n: number) {
+    if (sedated > 0 || finished) return;
+    energy = Math.max(0, energy - n);
+    lastHit = t;
+    hurt.classList.remove('on');
+    void hurt.offsetWidth; // restart the flash
+    hurt.classList.add('on');
+    if (energy <= 0) {
+      // Out cold: slump, fade out, wake up at the last checkpoint.
+      sedated = 0.001;
+      radio({ en: STRINGS.en.radioSedated, da: STRINGS.da.radioSedated });
+    }
+  }
+
+  function updateEnergy(dt: number) {
+    if (sedated > 0) {
+      sedated += dt;
+      sedateEl.classList.toggle('on', sedated > SEDATE.dark * 0.4 && sedated < SEDATE.wake);
+      if (sedated >= SEDATE.wake && player) {
+        const p = player.root.position;
+        p.copy(checkpoint);
+        vel.set(0, 0, 0);
+        vy = 0;
+        grounded = true;
+        camYaw = heading;
+        camPos.set(p.x - Math.sin(heading) * CHASE.back, p.y + CHASE.up, p.z - Math.cos(heading) * CHASE.back);
+        security?.regroup(p);
+        energy = 100;
+        sedated = 0;
+        notice(S().checkpoint);
+      }
+    } else if (t - lastHit > REGEN.after) energy = Math.min(100, energy + REGEN.rate * dt);
+    energyBar.style.transform = `scaleX(${energy / 100})`;
+    energyEl.classList.toggle('low', energy < 30);
+  }
+
   /** Touching bars last frame, and the direction into them. */
   let pressing = false;
   const pressDir = new THREE.Vector3();
@@ -721,7 +832,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         side += KEYS[k][0];
         ahead -= KEYS[k][1];
       }
-      if (picking || finished) side = ahead = 0;
+      if (picking || finished || sedated > 0) side = ahead = 0;
       const amount = Math.min(1, Math.hypot(side, ahead));
       fwd.set(Math.sin(camYaw), 0, Math.cos(camYaw));
       right.set(-Math.cos(camYaw), 0, Math.sin(camYaw));
@@ -746,7 +857,37 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         p.addScaledVector(vel, dt);
         p.x = THREE.MathUtils.clamp(p.x, -HALF, HALF);
         p.z = THREE.MathUtils.clamp(p.z, -HALF, HALF);
-      } else moveOnGround(p, vel, dt, player.radius, !grounded);
+      }
+      // How hard it is charging, before walls and fences take any of it away.
+      const charge = Math.hypot(vel.x, vel.z);
+      const hitBuilding = high ? null : moveOnGround(p, vel, dt, player.radius, !grounded);
+      if (hitBuilding && free && charge > CHARGE) {
+        vel.multiplyScalar(-0.25);
+        if (town.hit(hitBuilding, p)) {
+          // Down it comes.
+          sfx.collapse();
+          shake = 1.1;
+          const c = new THREE.Vector3((hitBuilding.minX + hitBuilding.maxX) / 2, 0, (hitBuilding.minZ + hitBuilding.maxZ) / 2);
+          for (const pp of people) if (Math.hypot(pp.group.position.x - c.x, pp.group.position.z - c.z) < 22) frighten(pp);
+          progress('destroy');
+        } else {
+          sfx.crash();
+          shake = Math.max(shake, 0.5);
+        }
+      }
+      if (fences && !high) {
+        const f = fences.collide(p, player.radius, vel, charge);
+        if (f === 'zap' && zapCool <= 0) {
+          zapCool = 0.8;
+          sfx.zap();
+          damage(ZAP_HIT);
+          shake = Math.max(shake, 0.7);
+        } else if (f === 'break') {
+          sfx.crash();
+          shake = Math.max(shake, 0.4);
+        }
+      }
+      zapCool = Math.max(0, zapCool - dt);
       // Cage bars only block; biting them (the roar button, when close) bends them.
       // Pressing against bars: no bounce, and friction so it doesn't slide off along them.
       let atBars = false;
@@ -824,7 +965,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       player.wingMode = spec.fly && flying ? 1 : grounded ? 0 : 0.5;
       // Leg pose: crouch while winding up or absorbing a landing; tuck the legs up after take-off,
       // and reach down for the ground again on the way down.
-      player.crouch = windup >= 0 ? THREE.MathUtils.smoothstep(windup / WINDUP, 0, 1) * 0.75 : landing * 0.85;
+      player.crouch = sedated > 0
+        ? Math.min(1, sedated * 0.9)
+        : windup >= 0 ? THREE.MathUtils.smoothstep(windup / WINDUP, 0, 1) * 0.75 : landing * 0.85;
       landing = Math.max(0, landing - dt * 2.6);
       const tuck = grounded ? 0 : spec.fly && flying ? 1 : vy > -5 ? 0.9 : 0.3;
       player.air += (tuck - player.air) * (1 - Math.exp(-dt * (grounded ? 20 : 8)));
@@ -877,6 +1020,18 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         if (pp.state === 'gone') continue;
         const q = pp.group.position;
         let run = 0;
+        // Run into at speed: knocked flat (they get up and flee).
+        if (free && pp.state !== 'down' && Math.hypot(q.x - p.x, q.z - p.z) < player.radius + 0.9 && speed > 3 && p.y - q.y < 3) {
+          frighten(pp);
+          if (knockDown(pp, p)) sfx.thud();
+        }
+        if (pp.state === 'down') {
+          pp.vel.multiplyScalar(Math.exp(-dt * 4));
+          q.addScaledVector(pp.vel, dt);
+          world.collide(q, 0.6);
+          town.collide(q, 0.6);
+          q.y = groundY(q.x, q.z);
+        }
         if (pp.state === 'idle') {
           if (free && Math.hypot(q.x - p.x, q.z - p.z) < player.radius + 7 && p.y - q.y < 10 && speed > 1.5) frighten(pp);
           if (free) consider(q);
@@ -894,7 +1049,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         posePerson(pp, dt, t, run);
       }
       for (const c of captives) if (free && c.state === 'caged') consider(c.cage.center);
-      arrow.visible = free && !!best.at && best.d > 14 && !picking && !finished;
+      arrow.visible = free && !!best.at && best.d > 14 && !picking && !finished && sedated <= 0;
       if (best.at && arrow.visible) {
         const target = best.at;
         const a = Math.atan2(target.x - p.x, target.z - p.z);
@@ -932,6 +1087,13 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     sun.position.copy(ground).add(new THREE.Vector3(28, 50, 18));
     sun.target.position.copy(ground);
 
+    town.update(dt);
+    fences?.update(dt, t);
+    if (player) {
+      const p = player.root.position;
+      security?.update(dt, t, { pos: p, radius: player.radius, speed: Math.hypot(vel.x, vel.z), free, ignore: sedated > 0 || finished });
+      updateEnergy(dt);
+    }
     cage.update(dt, t);
     for (const c of captives) {
       c.cage.update(dt, t);
@@ -1063,6 +1225,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   resize();
   setPlayer(heroSpec);
   if (!level || level.start === 'free') startOutside();
+  checkpoint.copy(player!.root.position);
   spawnTargets();
   renderGoals();
   if (choices.length > 1) showPicker();
@@ -1084,6 +1247,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     clearTimeout(toastTimer);
     ro.disconnect();
     weather.dispose();
+    town.dispose();
+    fences?.dispose();
+    security?.dispose();
     world.dispose();
     extra.forEach((x) => x.dispose());
     disposeDinoAssets();

@@ -28,6 +28,23 @@ export const CAGE_SPOTS: Circle[] = [
   { x: -15, z: 95, r: 13 },
 ];
 
+/** Main Street: a flattened, clear rectangle (centre, width along x, depth along z) with a road along x. */
+export const TOWN = { x: -75, z: 80, w: 48, d: 30, y: 3 };
+/** Electric fence lines across open ground, as [x1, z1, x2, z2]; kept clear of trees and rocks. */
+export const FENCE_LINES: [number, number, number, number][] = [
+  [-25, -30, 10, -50],
+  [35, 55, 60, 95],
+];
+/** Distance from a point to a fence line. */
+export function toLine(x: number, z: number, [x1, z1, x2, z2]: [number, number, number, number]) {
+  const dx = x2 - x1;
+  const dz = z2 - z1;
+  const t = Math.max(0, Math.min(1, ((x - x1) * dx + (z - z1) * dz) / (dx * dx + dz * dz)));
+  return Math.hypot(x - (x1 + dx * t), z - (z1 + dz * t));
+}
+/** How far outside the town rectangle a point is (negative inside). */
+export const outsideTown = (x: number, z: number) => Math.max(Math.abs(x - TOWN.x) - TOWN.w / 2, Math.abs(z - TOWN.z) - TOWN.d / 2);
+
 /** Flat-topped plateaus with steep rock walls: too steep to walk up, low enough to jump onto. */
 const MESAS = [
   { x: -35, z: 45, r: 15, h: 3.4, seed: 0.4 },
@@ -53,6 +70,8 @@ export function groundY(x: number, z: number): number {
     const edge = m.r * (1 + 0.16 * Math.sin(3 * a + m.seed) + 0.09 * Math.sin(5 * a + m.seed * 2));
     h += m.h * smooth(edge + 1.6, edge - 0.6, Math.hypot(x - m.x, z - m.z));
   }
+  // Main Street is levelled, easing back into the hills around it.
+  h += (TOWN.y - h) * smooth(12, 0, outsideTown(x, z));
   return h;
 }
 
@@ -130,6 +149,8 @@ export function buildWorld(): World {
   function blocked(x: number, z: number, clear: number) {
     if (Math.hypot(x - VOLCANO.x, z - VOLCANO.z) < VOLCANO.r + clear) return true;
     if (CAGE_SPOTS.some((c) => Math.hypot(x - c.x, z - c.z) < c.r + clear)) return true;
+    if (outsideTown(x, z) < 4 + clear) return true;
+    if (FENCE_LINES.some((l) => toLine(x, z, l) < 3 + clear)) return true;
     let hit = false;
     near(x, z, (c) => {
       if (Math.hypot(x - c.x, z - c.z) < c.r + clear) hit = true;
@@ -168,6 +189,22 @@ export function buildWorld(): World {
   const ground = new THREE.Mesh(groundGeo, keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78 })));
   ground.receiveShadow = true;
   group.add(ground);
+
+  // ---- Main Street: a wet asphalt road with kerbs and pavements ----
+  const asphalt = keep(new THREE.MeshStandardMaterial({ color: '#2a2c2d', roughness: 0.35, metalness: 0.1 }));
+  const paving = keep(new THREE.MeshStandardMaterial({ color: '#6a665e', roughness: 0.7 }));
+  const slab = (w: number, d: number, mat: THREE.Material, x: number, z: number, y: number) => {
+    const geo = keep(new THREE.PlaneGeometry(w, d));
+    geo.rotateX(-Math.PI / 2);
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.receiveShadow = true;
+    group.add(m);
+  };
+  slab(TOWN.w + 6, TOWN.d - 2, paving, TOWN.x, TOWN.z, TOWN.y + 0.03);
+  slab(TOWN.w + 40, 7, asphalt, TOWN.x, TOWN.z, TOWN.y + 0.06);
+  const stripe = keep(new THREE.MeshBasicMaterial({ color: '#8a8470' }));
+  for (let k = -5; k <= 5; k++) slab(2.2, 0.18, stripe, TOWN.x + k * 5, TOWN.z, TOWN.y + 0.08);
 
   // ---- Lake, with lily pads ----
   const lakeGeo = keep(new THREE.CircleGeometry(LAKE.r, 48));
