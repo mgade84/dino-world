@@ -1,4 +1,4 @@
-/** The playable dinosaurs. Kept free of Three.js so scripts/voice can read the names. */
+/** The playable dinosaurs. Kept free of Three.js so the title screen and settings can import it. */
 import type { Txt } from '../i18n';
 
 export interface DinoSpec {

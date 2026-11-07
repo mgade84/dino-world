@@ -26,17 +26,5 @@ Open `http://<your-computer-ip>:5175` (or `:8082`) on an iPad on the same Wi-Fi.
 ## Tech
 
 - **Vite + TypeScript, no UI framework.** Three.js (WebGL), loaded on demand when a level starts (`src/game/game.ts`, `world.ts`). Levels are data in `src/game/levels.ts`. Procedural dinosaurs with no asset files: smooth skinned bodies swept along the spine, jointed legs and skin textures painted in code (`dinos.ts`, `species.ts`); a storm with GPU rain, lightning and thunder (`weather.ts`); an instanced jungle (one draw call per plant kind) with grid-based collisions, and a third-person chase camera.
-- `src/engine/audio.ts` synthesizes every sound effect with Web Audio and handles iOS audio unlocking and speech.
+- `src/engine/audio.ts` synthesizes every sound effect with Web Audio (there are no sound files and no speech) and handles iOS audio unlocking.
 - The title screen, story screens and HUD are plain DOM with transform/opacity-only CSS animations.
-
-## Danish speech clips
-
-iPads and iPhones speak with the device voice. Elsewhere Danish uses one MP3 per phrase passed to `say()`, recorded with Piper (`da_DK-talesyntese-medium`; Piper is MIT, the voice is trained on a CC0 dataset). The clips are generated, not committed: the production build records them in the Dockerfile's `phrases` and `voice` stages, and Docker's build cache keeps earlier recordings.
-
-For the dev server, generate them once (and again after changing spoken Danish text):
-
-```bash
-scripts/voice/build.sh   # writes public/voice/ (git-ignored); needs only Docker
-```
-
-When you add or change a spoken Danish phrase, also add it to `scripts/voice/phrases.ts`.

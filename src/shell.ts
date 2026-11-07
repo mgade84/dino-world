@@ -1,5 +1,5 @@
 import type { GameContext, GameDef, Mode } from './types';
-import { sfx, stopSpeech } from './engine/audio';
+import { sfx } from './engine/audio';
 import { L, UI } from './i18n';
 
 export function mountGame(app: HTMLElement, def: GameDef, mode: Mode, onExit: () => void): () => void {
@@ -40,7 +40,6 @@ export function mountGame(app: HTMLElement, def: GameDef, mode: Mode, onExit: ()
 
   return () => {
     cleanup();
-    stopSpeech();
     el.remove();
   };
 }

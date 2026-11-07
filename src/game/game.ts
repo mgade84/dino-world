@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { GameContext } from '../types';
-import { say, sfx } from '../engine/audio';
+import { sfx } from '../engine/audio';
 import { L, type Txt } from '../i18n';
 import { animate, buildDino, disposeDinoAssets, DINOS, type DinoSpec, type Rig } from './dinos';
 import { buildWorld, groundY, HALF, rng, CAGE_SPOTS } from './world';
@@ -325,7 +325,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   }
   let respawning = false;
 
-  // ---- Park radio subtitles, and short notices ----
+  // ---- Park radio (subtitles with a crackle; nothing is spoken), and short notices ----
   let radioTimer = 0;
   function radio(line: Txt) {
     const text = L(line);
@@ -333,7 +333,6 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     sfx.radio();
     radioBox.querySelector('p')!.textContent = text;
     radioBox.hidden = false;
-    timers.push(window.setTimeout(() => alive && say(text), 250));
     clearTimeout(radioTimer);
     radioTimer = window.setTimeout(() => (radioBox.hidden = true), Math.max(4000, text.length * 75));
   }

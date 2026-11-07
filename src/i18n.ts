@@ -3,9 +3,9 @@ import { load, save } from './engine/storage';
 export type Lang = 'en' | 'da';
 export type Txt = Record<Lang, string>;
 
-export const LANGS: { id: Lang; flag: string; label: string; speech: string }[] = [
-  { id: 'en', flag: '🇬🇧', label: 'English', speech: 'en-US' },
-  { id: 'da', flag: '🇩🇰', label: 'Dansk', speech: 'da-DK' },
+export const LANGS: { id: Lang; flag: string; label: string }[] = [
+  { id: 'en', flag: '🇬🇧', label: 'English' },
+  { id: 'da', flag: '🇩🇰', label: 'Dansk' },
 ];
 
 const deviceLang: Lang = navigator.language?.toLowerCase().startsWith('da') ? 'da' : 'en';
@@ -20,7 +20,6 @@ export function setLang(l: Lang) {
   document.documentElement.lang = l;
 }
 
-export const speechLang = () => LANGS.find((x) => x.id === lang)!.speech;
 
 /** Picks the current language's entry: L({ en: 'dog', da: 'hund' }), or a whole message table. */
 export function L<T>(m: Record<Lang, T>): T {
@@ -33,7 +32,7 @@ const en = {
   language: 'Language',
   settings: 'Settings',
   hold: 'Hold for 3 seconds',
-  soundLabel: 'Sounds and voice',
+  soundLabel: 'Sound',
   app: 'App',
   refresh: 'Refresh app',
   refreshHint: 'Loads the newest version',
@@ -54,7 +53,7 @@ export const UI: Record<Lang, typeof en> = {
     language: 'Sprog',
     settings: 'Indstillinger',
     hold: 'Hold inde i 3 sekunder',
-    soundLabel: 'Lyd og stemme',
+    soundLabel: 'Lyd',
     app: 'App',
     refresh: 'Opdater app',
     refreshHint: 'Henter den nyeste version',

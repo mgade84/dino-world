@@ -1,7 +1,5 @@
 /**
- * Sound effects are synthesized with Web Audio — no files to download, zero latency.
- * Speech uses the device voice on iOS. Elsewhere it uses recorded clips where scripts/voice
- * made them, else the device voice.
+ * Sound effects are synthesized with Web Audio — no files to download, zero latency. There is no speech.
  * iOS only lets audio start inside a user gesture, so main.ts calls unlockAudio()
  * on every tap (it is a no-op once running).
  *
@@ -10,14 +8,11 @@
  * iPadOS 15) get a looping silent <audio>, which moves the page to the media channel.
  */
 import { load, save } from './storage';
-import { getLang, type Lang, speechLang } from '../i18n';
-import { clipKey } from './clipkey';
 
 let ac: AudioContext | null = null;
 let master: GainNode | null = null;
 let muted = load('muted', false);
 let silence: HTMLAudioElement | null = null;
-let speechUnlocked = false;
 
 // iPadOS Safari reports itself as a Mac, so also check for touch.
 const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -58,17 +53,7 @@ function playSilence(rate: number) {
   if (silence.paused && !document.hidden) silence.play()?.catch(() => {}); // only allowed in some gestures
 }
 
-/** iOS only speaks from timers once a page has spoken inside a tap, so say nothing in the first one. */
-function unlockSpeech(e?: Event) {
-  if (speechUnlocked || !isIOS || (e?.type !== 'touchend' && e?.type !== 'click')) return;
-  speechUnlocked = true;
-  const u = new SpeechSynthesisUtterance(' ');
-  u.volume = 0;
-  window.speechSynthesis.speak(u);
-}
-
-export function unlockAudio(e?: Event) {
-  unlockSpeech(e);
+export function unlockAudio() {
   if (!ac) {
     const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AC) return;
@@ -97,10 +82,7 @@ export function setMuted(m: boolean) {
   muted = m;
   save('muted', m);
   if (master) master.gain.value = m ? 0 : 0.6;
-  if (m) {
-    stopSpeech();
-    silence?.pause(); // lets other apps' music carry on
-  }
+  if (m) silence?.pause(); // lets other apps' music carry on
 }
 
 function voice(
@@ -407,107 +389,3 @@ export const sfx = {
     voice('sine', 280, 0.08, long ? 0.8 : 0.32, 0, 640);
   },
 };
-
-const voiceCache = new Map<string, SpeechSynthesisVoice | null>();
-
-/** Best local voice for a BCP-47 tag like 'da-DK'. iPads ship 'Sara' (da) and 'Samantha' (en). */
-function voiceFor(tag: string) {
-  if (voiceCache.has(tag)) return voiceCache.get(tag)!;
-  const voices = window.speechSynthesis.getVoices();
-  if (!voices.length) return null; // not loaded yet; try again next time
-  const base = tag.slice(0, 2);
-  const v =
-    voices.find((x) => x.lang.replace('_', '-') === tag && x.localService) ??
-    voices.find((x) => x.lang.replace('_', '-') === tag) ??
-    voices.find((x) => x.lang.startsWith(base)) ??
-    null;
-  voiceCache.set(tag, v);
-  return v;
-}
-
-function speak(text: string) {
-  if (!('speechSynthesis' in window)) return;
-  const tag = speechLang();
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = tag;
-  u.rate = 0.95;
-  u.pitch = 1.15;
-  const v = voiceFor(tag);
-  if (v) u.voice = v;
-  window.speechSynthesis.speak(u);
-}
-
-// Recorded clips (scripts/voice) for languages that many devices can't speak well:
-// Chrome on Linux, for one, has no Danish voice and reads Danish with an American accent.
-// iPads and iPhones ship good voices for both languages, so they always speak live.
-const CLIP_LANGS: Lang[] = isIOS ? [] : ['da'];
-const clipSets = new Map<Lang, Set<string>>();
-const clipBuffers = new Map<string, Promise<AudioBuffer>>(); // most recently used last
-let clipSrc: AudioBufferSourceNode | null = null;
-let sayId = 0;
-
-function loadClipList(lang: Lang) {
-  if (!CLIP_LANGS.includes(lang) || clipSets.has(lang)) return;
-  clipSets.set(lang, new Set()); // fall back to the device voice until the list arrives
-  fetch(`voice/${lang}/phrases.json`)
-    .then((r) => r.json())
-    .then((t: Record<string, string>) => clipSets.set(lang, new Set(Object.keys(t))))
-    .catch(() => {});
-}
-loadClipList(getLang());
-
-function clipBuffer(ctx: AudioContext, url: string) {
-  let p = clipBuffers.get(url);
-  if (p) clipBuffers.delete(url);
-  else
-    p = fetch(url)
-      .then((r) => r.arrayBuffer())
-      // Callback form: older Safari has no promise-returning decodeAudioData.
-      .then((data) => new Promise<AudioBuffer>((res, rej) => ctx.decodeAudioData(data, res, rej)));
-  clipBuffers.set(url, p);
-  if (clipBuffers.size > 40) clipBuffers.delete(clipBuffers.keys().next().value!);
-  p.catch(() => clipBuffers.delete(url));
-  return p;
-}
-
-/** Speaks a short phrase in the selected language — helps kids who can't read yet. */
-export function say(text: string) {
-  if (muted) return;
-  const interrupting = 'speechSynthesis' in window && (speechSynthesis.speaking || speechSynthesis.pending);
-  stopSpeech();
-  const id = sayId;
-  const lang = getLang();
-  loadClipList(lang);
-  const key = clipKey(text);
-  const known = clipSets.get(lang)?.has(key);
-  if (known && ac && master && ac.state === 'running') {
-    const [ctx, out] = [ac, master];
-    clipBuffer(ctx, `voice/${lang}/${key}.mp3`).then(
-      (buf) => {
-        if (id !== sayId) return; // something newer was said meanwhile
-        const g = ctx.createGain();
-        g.gain.value = 1.6; // master is 0.6 for effects; speech should be near full volume
-        g.connect(out);
-        clipSrc = ctx.createBufferSource();
-        clipSrc.buffer = buf;
-        clipSrc.connect(g);
-        clipSrc.start();
-      },
-      () => id === sayId && speak(text),
-    );
-    return;
-  }
-  if (import.meta.env.DEV && !known && clipSets.get(lang)?.size) {
-    console.warn(`No recorded ${lang} clip for "${text}". Add it in scripts/voice/phrases.ts and run scripts/voice/build.sh.`);
-  }
-  // Safari drops an utterance that follows cancel() too closely.
-  if (interrupting) setTimeout(() => id === sayId && speak(text), 80);
-  else speak(text);
-}
-
-export function stopSpeech() {
-  sayId++;
-  clipSrc?.stop();
-  clipSrc = null;
-  if ('speechSynthesis' in window && (speechSynthesis.speaking || speechSynthesis.pending)) speechSynthesis.cancel();
-}

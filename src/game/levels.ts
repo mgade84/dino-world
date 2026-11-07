@@ -1,6 +1,6 @@
 /**
  * The story: one T-Rex, Specimen T-07 ("Grimjaw"), breaking out of Halcyon Genetics' Primordia park
- * on Kessick Island during a tropical storm. Kept free of Three.js so scripts/voice can read the radio lines.
+ * on Kessick Island during a tropical storm. Kept free of Three.js so the title screen and settings can use it without loading the 3D code.
  */
 import type { Txt } from '../i18n';
 import type { DinoSpec } from './species';
