@@ -174,7 +174,14 @@ export function createSecurity(
         q.y = groundY(q.x, q.z);
         posePerson(p, dt, t, speed);
         // A fleeing ranger keeps their rifle: 'idle' pose with legs running.
-        if (r.mode === 'flee') p.legs.forEach((l, i) => (l.rotation.x = Math.sin(t * 13 + i * Math.PI) * 0.9));
+        if (r.mode === 'flee') {
+          p.legs.forEach((l, i) => {
+            const ph = t * 13 + i * Math.PI;
+            l.rotation.x = Math.sin(ph) * 0.9;
+            // The knee folds as the leg swings forward, as in posePerson's run.
+            p.shins[i].rotation.x = 0.08 + Math.max(0, -Math.cos(ph)) * 1.2;
+          });
+        }
       }
       for (let i = darts.length - 1; i >= 0; i--) {
         const dart = darts[i];

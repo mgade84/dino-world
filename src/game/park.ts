@@ -392,7 +392,6 @@ export interface Car {
 }
 
 const smokeMat = new THREE.MeshLambertMaterial({ color: '#4a4a4a', transparent: true, opacity: 0.55, depthWrite: false });
-const glassMat = new THREE.MeshLambertMaterial({ color: '#bfe6ff', transparent: true, opacity: 0.55 });
 
 /** Height of the roof gear (rack and light bar) above the wheels' ground line: a wreck rests on it. */
 const CAR_ROOF = 2.8;
@@ -978,7 +977,6 @@ export function disposePark() {
   owned.forEach((o) => o.dispose());
   owned.length = 0;
   smokeMat.dispose();
-  glassMat.dispose();
   alertTex?.dispose();
   alertTex = null;
   if (personShapes) {
