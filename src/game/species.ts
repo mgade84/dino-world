@@ -1,5 +1,5 @@
 /** The playable dinosaurs. Kept free of Three.js so scripts/voice can read the names. */
-import type { Txt } from '../../i18n';
+import type { Txt } from '../i18n';
 
 export interface DinoSpec {
   id: 'trex' | 'tri' | 'stego' | 'brachio' | 'spino' | 'ptera' | 'mosa' | 'plesio' | 'ichthy';

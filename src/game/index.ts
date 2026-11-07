@@ -1,5 +1,5 @@
-import type { GameDef } from '../../types';
-import { say, sfx } from '../../engine/audio';
+import type { GameDef } from '../types';
+import { say, sfx } from '../engine/audio';
 import { S } from './strings';
 import './dino.css';
 

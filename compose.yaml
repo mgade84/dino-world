@@ -1,0 +1,31 @@
+# Development:  docker compose --profile dev up
+#   -> http://localhost:5175 (hot reload; also reachable from an iPad on the same Wi-Fi)
+# Production:   docker compose --profile prod up -d --build
+#   -> http://localhost:8082
+
+name: dino-world
+
+services:
+  dev:
+    profiles: [dev]
+    build:
+      context: .
+      target: dev
+    ports:
+      - "5175:5175"
+    volumes:
+      - ./:/app
+      - /app/node_modules # keep the container's node_modules, not the host's
+    environment:
+      # Set WATCH_POLLING=true if edits don't trigger reloads (some Windows/macOS setups)
+      - WATCH_POLLING=${WATCH_POLLING:-false}
+
+  web:
+    profiles: [prod]
+    build:
+      context: .
+      target: prod
+      pull: true # always build on the latest patched base images
+    ports:
+      - "${PORT:-8082}:80"
+    restart: unless-stopped

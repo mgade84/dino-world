@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import type { GameContext } from '../../types';
-import { say, sfx } from '../../engine/audio';
-import { L } from '../../i18n';
+import type { GameContext } from '../types';
+import { say, sfx } from '../engine/audio';
+import { L } from '../i18n';
 import { animate, buildDino, disposeDinoAssets, SEA_DINOS, type DinoSpec, type Rig } from './dinos';
 import { createBoat, createFish, disposePark, FISH_COLORS, posePerson, scare, type Boat, type Fish } from './park';
 import { buildOcean, floorY, SEA_HALF } from './seaworld';

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import type { GameContext } from '../../types';
-import { say, sfx } from '../../engine/audio';
-import { L } from '../../i18n';
+import type { GameContext } from '../types';
+import { say, sfx } from '../engine/audio';
+import { L } from '../i18n';
 import { animate, buildDino, disposeDinoAssets, DINOS, type DinoSpec, type Rig } from './dinos';
 import { buildWorld, CAGE_SPOTS, groundY, HALF, rng } from './world';
 import { CAGE, CAR_COLORS, createCage, createCar, createPerson, disposePark, posePerson, scare, updateCar, wreckCar, type Cage, type Car, type Person } from './park';

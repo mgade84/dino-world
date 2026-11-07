@@ -1,4 +1,4 @@
-import { L, type Lang } from '../../i18n';
+import { L, type Lang } from '../i18n';
 
 const en = {
   loading: 'Loading the jungle…',
