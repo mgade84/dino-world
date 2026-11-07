@@ -116,8 +116,8 @@ function noise2(x: number, y: number, period: number, seed: number) {
  * Scales, a darker back with irregular stripes, and a pale belly. u runs round the body (0 and 1 under
  * the belly, 0.5 along the spine); v runs along it and repeats. Returns a colour map and a bump map.
  */
-function skinMaterial(c: Colors) {
-  const key = `${c.body}${c.belly}${c.accent}`;
+function skinMaterial(c: Colors, stripes = true) {
+  const key = `${c.body}${c.belly}${c.accent}${stripes ? '' : '/plain'}`;
   const hit = skins.get(key);
   if (hit) return hit.mat;
   const W = 256;
@@ -140,12 +140,13 @@ function skinMaterial(c: Colors) {
     const v = y / H;
     for (let x = 0; x < W; x++) {
       const u = x / W;
-      const dorsal = (1 - Math.cos(u * Math.PI * 2)) / 2;
+      // Limbs (no stripes) keep close to the body colour all the way round; bodies shade to a pale belly.
+      const dorsal = (1 - Math.cos(u * Math.PI * 2)) / 2 * (stripes ? 1 : 0.45) + (stripes ? 0 : 0.5);
       tmp.copy(belly).lerp(body, THREE.MathUtils.smoothstep(dorsal, 0.22, 0.6));
       // Irregular darker bands across the back, broken up by noise.
       const wobble = noise2(u * 8, v * 16, 8, 1) * 2.2 + noise2(u * 16, v * 32, 16, 2) * 0.8;
       const band = Math.sin(v * Math.PI * 2 * 7 + wobble * 2.4);
-      if (band > 0.25 && dorsal > 0.45) tmp.lerp(accent, THREE.MathUtils.clamp((band - 0.25) * 1.6, 0, 1) * (dorsal - 0.45) * 1.5);
+      if (stripes && band > 0.25 && dorsal > 0.45) tmp.lerp(accent, THREE.MathUtils.clamp((band - 0.25) * 1.6, 0, 1) * (dorsal - 0.45) * 1.5);
       // Mottling.
       const mottle = noise2(u * 32, v * 64, 32, 3);
       tmp.multiplyScalar(0.86 + mottle * 0.24);
@@ -180,9 +181,13 @@ function skinMaterial(c: Colors) {
     t.anisotropy = 4;
   }
   const mat = new THREE.MeshStandardMaterial({ map, bumpMap, bumpScale: 1.2, roughness: 0.62, metalness: 0 });
+  mat.userData.colors = c;
   skins.set(key, { mat, tex: [map, bumpMap] });
   return mat;
 }
+
+/** The same skin without the back stripes, for limbs (stripes along a leg read as bandages). */
+const limbSkin = (skin: THREE.Material) => (skin.userData.colors ? skinMaterial(skin.userData.colors as Colors, false) : skin);
 
 // ===================== Swept geometry =====================
 
@@ -305,15 +310,15 @@ function capped(rings: Ring[], start = true, end = true): Ring[] {
 }
 
 /** A tapered limb segment from `a` to `b` (in the yz plane), with a muscle bulge near the top. */
-function limb(parent: THREE.Object3D, mat: THREE.Material, a: V3, b: V3, w0: number, w1: number, bulge = 1.12) {
+function limb(parent: THREE.Object3D, mat: THREE.Material, a: V3, b: V3, w0: number, w1: number, bulge = 1.12, uOffset = 0.5) {
   const A = new THREE.Vector3(...a);
   const B = new THREE.Vector3(...b);
   const rings: Ring[] = [0, 0.12, 0.35, 0.7, 1].map((t) => {
     const w = (w0 + (w1 - w0) * t) * (t > 0.05 && t < 0.6 ? bulge : 1);
     return { p: A.clone().lerp(B, t), w, h: w * 1.05, drop: 0 };
   });
-  // uOffset 0.5 puts the texture's darker back on the back of the limb and its pale belly on the front.
-  const mesh = new THREE.Mesh(sweep(capped(rings), 12, 0.5, 0.5), mat);
+  // uOffset picks which side of the limb gets the texture's darker back: 0.5 the back, 0.25 the +x side, 0.75 the -x side.
+  const mesh = new THREE.Mesh(sweep(capped(rings), 12, 0.5, uOffset), mat);
   mesh.castShadow = true;
   parent.add(mesh);
   return mesh;
@@ -452,12 +457,30 @@ function attach(b: Body, obj: THREE.Object3D, at: V3, bone = b.boneAt(at[2])) {
 // ===================== Common parts =====================
 
 /** Small, deep-set eyes with a bony brow. */
+/**
+ * Reptile eyes: a glossy eyeball with an amber iris, a slit pupil and a highlight, set in a dark socket
+ * under heavy upper and lower lids and a bony brow, looking out to the side and a little forward.
+ */
 function eyes(b: Body, skin: THREE.Material, x: number, y: number, z: number, r: number, bone?: THREE.Bone) {
+  const ball = plainMat('#1a120b', 0.08);
+  const iris = new THREE.MeshStandardMaterial({ color: '#c08a2a', emissive: '#5a3208', emissiveIntensity: 0.6, roughness: 0.12 });
+  owned.push(iris);
+  const pupil = plainMat('#050403', 0.1);
+  const socket = plainMat('#140e0a', 0.9);
   for (const side of [-1, 1]) {
     const g = attach(b, new THREE.Group(), [x * side, y, z], bone);
-    part(g, GEO.sphere, eyeMat(), [r * 0.75, r, r]);
-    part(g, GEO.sphere, plainMat('#8a5a1c', 0.2), [r * 0.3, r * 0.45, r * 0.45], [side * r * 0.55, 0, r * 0.2]);
-    part(g, GEO.sphere, skin, [r * 1.35, r * 0.55, r * 1.9], [side * -r * 0.15, r * 0.75, 0], [0.15, 0, 0]);
+    g.rotation.y = side * 0.35; // turn the eye's +x (outward) a little forward
+    part(g, GEO.sphere, socket, [r * 0.7, r * 1.2, r * 1.45], [-side * r * 0.12, 0, 0]);
+    part(g, GEO.sphere, ball, [r * 0.82, r, r * 1.1]);
+    // Iris and pupil sit on the outward-facing surface of the eyeball.
+    part(g, GEO.sphere, iris, [r * 0.16, r * 0.72, r * 0.78], [side * r * 0.72, 0, 0]);
+    part(g, GEO.sphere, pupil, [r * 0.08, r * 0.6, r * 0.16], [side * r * 0.86, 0, 0]);
+    part(g, GEO.sphere, plainMat('#ffffff', 0.05), [r * 0.05, r * 0.12, r * 0.12], [side * r * 0.84, r * 0.35, r * 0.28]);
+    // Lids: hooded above, a softer fold below; they leave a narrow, watchful opening.
+    part(g, GEO.sphere, skin, [r * 0.95, r * 0.62, r * 1.35], [side * r * 0.08, r * 0.62, 0], [0, 0, side * 0.25]);
+    part(g, GEO.sphere, skin, [r * 0.9, r * 0.45, r * 1.25], [side * r * 0.05, -r * 0.72, 0], [0, 0, -side * 0.2]);
+    // The brow ridge overhanging it all.
+    part(g, GEO.sphere, skin, [r * 1.1, r * 0.5, r * 2.0], [-side * r * 0.1, r * 1.05, -r * 0.1], [0.12, 0, side * 0.3]);
   }
 }
 
@@ -511,11 +534,17 @@ function buildLeg(root: THREE.Object3D, skin: THREE.Material, d: LegDef): Leg {
   const [p0, p1, p2, p3] = d.pts;
   const rel = (a: V3, b: V3): V3 => [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
   const pivot = group(root, [d.x, d.y, d.z]);
-  limb(pivot, skin, p0, p1, d.w[0], d.w[1], 1.1);
+  // Stripe-free skin, turned so the outer side of the leg matches the flank above it.
+  skin = limbSkin(skin);
+  const uo = d.x >= 0 ? 0 : 1;
+  limb(pivot, skin, p0, p1, d.w[0], d.w[1], 1.1, uo);
   const knee = group(pivot, p1);
-  limb(knee, skin, [0, 0, 0], rel(p1, p2), d.w[1], d.w[2]);
+  limb(knee, skin, [0, 0, 0], rel(p1, p2), d.w[1], d.w[2], 1.12, uo);
   const ankle = group(knee, rel(p1, p2));
-  limb(ankle, skin, [0, 0, 0], rel(p2, p3), d.w[2], d.w[3], 1.0);
+  limb(ankle, skin, [0, 0, 0], rel(p2, p3), d.w[2], d.w[3], 1.0, uo);
+  // Fill the knee and ankle so the segments flow into each other instead of pinching at the joint.
+  part(knee, GEO.sphere, skin, [d.w[1] * 1.02, d.w[1] * 1.05, d.w[1] * 1.08]);
+  part(ankle, GEO.sphere, skin, [d.w[2] * 1.02, d.w[2] * 1.05, d.w[2] * 1.06]);
   const foot = group(ankle, rel(p2, p3));
   // A fleshy pad under the end of the leg, from the heel to the toe joints, sitting on the ground.
   const above = d.y + p3[1];
@@ -539,7 +568,7 @@ function buildLeg(root: THREE.Object3D, skin: THREE.Material, d: LegDef): Leg {
     const toe = group(foot, [Math.sin(spread) * w3 * 0.6, 0, w3 * 0.55], [0, spread, 0]);
     const len = d.toeLen * (k === 0 || k === d.toes - 1 ? 0.82 : 1);
     const tip: V3 = [0, -above + toeR * 0.75, len];
-    limb(toe, skin, [0, -above + toeR * 1.1, -w3 * 0.1], tip, toeR, toeR * 0.6, 1.08);
+    limb(toe, skin, [0, -above + toeR * 1.1, -w3 * 0.1], tip, toeR, toeR * 0.6, 1.08, uo);
     if (d.claws !== false) part(toe, GEO.cone, ivory(), [toeR * 0.45, len * 0.42, toeR * 0.45], [0, tip[1] - toeR * 0.25, tip[2] + len * 0.14], [Math.PI / 2 + 0.35, 0, 0]);
   }
   const segs = [rel(p0, p1), rel(p1, p2), rel(p2, p3)].map(([, y, z]) => [y, z] as [number, number]);
@@ -592,7 +621,7 @@ function trex(c: Colors): Rig {
   const jawPivot = jaw(b, skin, [0, 0.98, 2.62], [[-0.1, 0, 0.42, 0.25], [0.05, -0.08, 0.5, 0.27], [0.65, -0.13, 0.44, 0.23], [1.3, -0.1, 0.31, 0.16], [1.8, -0.04, 0.17, 0.09], [1.95, -0.03, 0.03, 0.03]], 9, 0.13);
   // Upper teeth hang from the skull's lower edge (body-space points, made relative to the skull bone).
   teeth(skull, [0.44, 1.12 - sh.y, 2.95 - sh.z], [0.18, 0.94 - sh.y, 4.35 - sh.z], 10, 0.18, false);
-  eyes(b, skin, 0.42, 1.76, 2.95, 0.08, skull);
+  eyes(b, skin, 0.5, 1.74, 2.92, 0.085, skull);
   for (const side of [-1, 1]) part(attach(b, new THREE.Group(), [side * 0.13, 1.28, 4.5], skull), GEO.sphere, eyeMat(), [0.04, 0.035, 0.06]);
   scutes(b, plainMat(c.accent, 0.7), -3.8, 1.6, 14, 0.14);
   // Little two-fingered arms under the chest.
@@ -622,31 +651,33 @@ function triceratops(c: Colors): Rig {
   const b = skinnedBody(
     [
       [-3.7, -0.35, 0.02, 0.02], [-3.0, -0.18, 0.15, 0.18], [-2.2, 0.05, 0.32, 0.38], [-1.4, 0.25, 0.64, 0.72],
-      [-0.6, 0.35, 0.92, 0.94, 0.2], [0.3, 0.35, 1.0, 0.96, 0.3], [1.1, 0.25, 0.86, 0.84, 0.2], [1.7, 0.12, 0.56, 0.56],
-      [2.1, 0.08, 0.5, 0.52], [2.5, -0.02, 0.46, 0.5, -0.1], [2.9, -0.18, 0.33, 0.38], [3.25, -0.34, 0.18, 0.22], [3.45, -0.44, 0.05, 0.07],
+      [-0.6, 0.35, 0.92, 0.94, 0.2], [0.3, 0.35, 1.0, 0.96, 0.3], [1.1, 0.25, 0.86, 0.84, 0.2], [1.7, 0.12, 0.6, 0.6],
+      [2.1, 0.1, 0.58, 0.62], [2.55, 0, 0.55, 0.62, -0.1], [3.0, -0.18, 0.42, 0.5], [3.4, -0.36, 0.25, 0.32], [3.65, -0.48, 0.06, 0.08],
     ],
     [-1.4, -2.3, -3.0], -0.6, [1.0, 1.8, 2.15], skin,
   );
   body.add(b.mesh);
   const head = b.fwd[2];
-  const jawPivot = jaw(b, skin, [0, -0.18, 2.4], [[-0.1, 0, 0.3, 0.16], [0.1, -0.05, 0.34, 0.17], [0.55, -0.12, 0.24, 0.13], [0.9, -0.2, 0.1, 0.07], [1.0, -0.22, 0.03, 0.03]], 0, 0.05);
-  // Frill: a broad bony shield swept up and back from the skull, its edge studded with knobs.
-  const frill = attach(b, new THREE.Group(), [0, 0.45, 2.05], head);
-  frill.rotation.x = -0.95;
-  part(frill, GEO.sphere, skin, [1.25, 1.05, 0.1], [0, 0.55, 0]);
-  for (let k = 0; k < 11; k++) {
-    const a = -1.35 + (k / 10) * 2.7;
-    part(frill, GEO.cone, plainMat(c.accent, 0.6), [0.09, 0.22, 0.09], [Math.sin(a) * 1.22, 0.55 + Math.cos(a) * 1.02, 0], [0, 0, -a]);
+  const jawPivot = jaw(b, skin, [0, -0.2, 2.45], [[-0.1, 0, 0.36, 0.18], [0.1, -0.05, 0.4, 0.2], [0.6, -0.14, 0.28, 0.15], [1.0, -0.24, 0.12, 0.08], [1.12, -0.26, 0.03, 0.03]], 0, 0.05);
+  // Frill: a broad bony shield swept up and back over the neck, with a thick rim studded with knobs.
+  const frill = attach(b, new THREE.Group(), [0, 0.5, 2.2], head);
+  frill.rotation.x = -0.72;
+  // Skin-covered shield on a darker rim that shows round its edge.
+  part(frill, GEO.sphere, plainMat(c.accent, 0.65), [1.62, 1.37, 0.12], [0, 0.85, -0.03]);
+  part(frill, GEO.sphere, skin, [1.5, 1.25, 0.16], [0, 0.85, 0.01]);
+  for (let k = 0; k < 15; k++) {
+    const a = -1.5 + (k / 14) * 3.0;
+    part(frill, GEO.cone, ivory(), [0.08, 0.24, 0.08], [Math.sin(a) * 1.58, 0.85 + Math.cos(a) * 1.33, 0], [0, 0, -a]);
   }
   const horn = plainMat('#d6cbb0', 0.5);
   for (const side of [-1, 1]) {
-    const h = attach(b, new THREE.Group(), [side * 0.3, 0.42, 2.55], head);
-    h.rotation.set(Math.PI / 2 - 0.35, 0, -side * 0.12);
-    part(h, GEO.cone, horn, [0.1, 1.15, 0.1], [0, 0.55, 0]);
+    const h = attach(b, new THREE.Group(), [side * 0.32, 0.5, 2.6], head);
+    h.rotation.set(Math.PI / 2 - 0.4, 0, -side * 0.14);
+    part(h, GEO.cone, horn, [0.12, 1.4, 0.12], [0, 0.66, 0]);
   }
-  part(attach(b, new THREE.Group(), [0, 0.12, 3.15], head), GEO.cone, horn, [0.07, 0.36, 0.07], [0, 0.15, 0], [0.45, 0, 0]);
-  part(attach(b, new THREE.Group(), [0, -0.32, 3.3], head), GEO.cone, plainMat('#2e2720', 0.5), [0.12, 0.3, 0.1], [0, 0, 0.1], [Math.PI / 2 + 0.6, 0, 0]);
-  eyes(b, skin, 0.4, 0.28, 2.55, 0.06, head);
+  part(attach(b, new THREE.Group(), [0, 0.15, 3.25], head), GEO.cone, horn, [0.08, 0.42, 0.08], [0, 0.18, 0], [0.45, 0, 0]);
+  part(attach(b, new THREE.Group(), [0, -0.36, 3.5], head), GEO.cone, plainMat('#2e2720', 0.5), [0.14, 0.34, 0.12], [0, 0, 0.1], [Math.PI / 2 + 0.6, 0, 0]);
+  eyes(b, skin, 0.46, 0.3, 2.62, 0.065, head);
   const r = rig(root, body, b, { jaw: jawPivot, radius: 2, stepRate: 6, bob: 0.06 });
   r.legs = ([[-1, 1.05, 0, -1], [1, 1.05, Math.PI, -1], [-1, -0.85, Math.PI, 1], [1, -0.85, 0, 1]] as const).map(([sx, z, off, bend]) =>
     buildLeg(root, skin, bend < 0
@@ -730,7 +761,7 @@ function brachiosaurus(c: Colors): Rig {
   body.add(b.mesh);
   const head = b.fwd[b.fwd.length - 1];
   part(attach(b, new THREE.Group(), [0, 6.02, 3.75], head), GEO.sphere, skin, [0.2, 0.16, 0.3]);
-  eyes(b, skin, 0.24, 5.86, 3.88, 0.045, head);
+  eyes(b, skin, 0.27, 5.86, 3.86, 0.05, head);
   const r = rig(root, body, b, { radius: 2.4, stepRate: 4, bob: 0.08 });
   r.legs = ([[-1, 1.2, 0, -1], [1, 1.2, Math.PI, -1], [-1, -1.1, Math.PI, 1], [1, -1.1, 0, 1]] as const).map(([sx, z, off, bend]) =>
     buildLeg(root, skin, bend < 0
@@ -916,9 +947,13 @@ export function animate(r: Rig, dt: number, move: number, t: number): boolean {
   if (r.wings.length) {
     r.spread += ((r.wingMode > 0 ? 1 : 0) - r.spread) * Math.min(1, dt * 6);
     const beat = r.wingMode >= 1 ? Math.sin(t * 9) * 0.6 : r.wingMode > 0 ? Math.sin(t * 2) * 0.05 + 0.08 : 0;
+    // Folded, each wing swings back along the body and lies against its side.
+    const fold = 1 - r.spread;
     for (const w of r.wings) {
-      w.pivot.scale.x = 0.22 + 0.78 * r.spread;
-      w.pivot.rotation.z = w.side * (beat * r.spread - (1 - r.spread) * 1.05);
+      w.pivot.scale.x = 0.26 + 0.74 * r.spread;
+      w.pivot.scale.z = 0.3 + 0.7 * r.spread;
+      w.pivot.rotation.y = w.side * fold * 1.2;
+      w.pivot.rotation.z = w.side * (beat * r.spread + fold * 0.55);
     }
   }
   const step = Math.floor(r.phase / Math.PI);
