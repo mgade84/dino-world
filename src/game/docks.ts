@@ -1,11 +1,11 @@
 import * as THREE from 'three';
 import { createPerson, posePerson, type Person } from './park';
-import { DOCKS, groundY, HALF, SHORE } from './world';
+import { DOCKS, groundY, HALF, PIER, SHORE } from './world';
 import { bake } from './merge';
 
 /**
- * The north-coast docks: a pier with evacuation launches moored either side, a boat shed and crates on
- * the landing. Boats can be sent off on a schedule; each one backs out and sails along the coast,
+ * The north-coast docks: a pier (walkable: see `floorY()`) with evacuation launches moored either side,
+ * and crates on the landing (the boat shed is one of the town's breakable buildings). Boats can be sent off on a schedule; each one backs out and sails along the coast,
  * and gets away once it reaches the edge of the island. A dinosaur that rams a boat (moored or
  * sailing) capsizes it; the people aboard go over the side and swim for it.
  */
@@ -37,7 +37,6 @@ export interface Docks {
   dispose(): void;
 }
 
-const PIER = { x: DOCKS.x, z0: SHORE - 6, z1: 124, w: 3.6, deck: 0.7 };
 const SPEED = 3.4;
 const HULL = { len: 11, beam: 4 };
 
@@ -61,20 +60,14 @@ export function createDocks(scene: THREE.Scene, rand: () => number): Docks {
     return mesh;
   };
 
-  // Pier: a plank deck on posts, low over the water.
+  // Pier: a plank deck on posts, level with the landing.
   const len = PIER.z1 - PIER.z0;
-  put(root, box, wood, [PIER.w, 0.25, len], [PIER.x, PIER.deck, (PIER.z0 + PIER.z1) / 2]);
+  put(root, box, wood, [PIER.w, 0.25, len], [PIER.x, PIER.deck - 0.125, (PIER.z0 + PIER.z1) / 2]);
   for (let z = PIER.z0 + 1; z <= PIER.z1; z += 3) for (const s of [-1, 1]) {
     const y = groundY(PIER.x, z);
-    put(root, cyl, darkWood, [0.18, PIER.deck - y + 0.9, 0.18], [PIER.x + s * (PIER.w / 2 - 0.15), (PIER.deck + y + 0.9) / 2, z]);
+    put(root, cyl, darkWood, [0.18, PIER.deck - y + 0.35, 0.18], [PIER.x + s * (PIER.w / 2 - 0.15), (PIER.deck + y + 0.35) / 2, z]);
   }
-  // Boat shed and stacked crates on the landing.
-  const shedX = DOCKS.x - 10;
-  const shedZ = DOCKS.z - 1;
-  const sy = groundY(shedX, shedZ);
-  put(root, box, std('#6a675e', 0.85), [8, 4, 6], [shedX, sy + 2, shedZ]);
-  put(root, box, std('#2e2c2a', 0.7), [8.6, 0.3, 6.6], [shedX, sy + 4.1, shedZ], [0, 0, 0.05]);
-  put(root, box, std('#3a3530', 0.8), [3, 3, 0.1], [shedX, sy + 1.5, shedZ + 3.02]);
+  // Stacked crates on the landing.
   for (let k = 0; k < 7; k++) {
     const x = DOCKS.x + 6 + (k % 3) * 1.4;
     const z = DOCKS.z - 3 + Math.floor(k / 3) * 1.4;

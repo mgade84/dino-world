@@ -50,6 +50,8 @@ export interface Rig {
   /** Collision radius. */
   radius: number;
   stepRate: number;
+  /** How long the current roar lasts, in seconds (the head rears back for the first 5/8 of it). */
+  roarFor: number;
   bob: number;
   phase: number;
   /** Counts down from 1 while roaring. */
@@ -584,7 +586,7 @@ const PAIR = [0, Math.PI];
 function rig(root: THREE.Group, body: THREE.Group, b: Body, o: Partial<Rig>): Rig {
   return {
     root, body, head: b.fwd[b.fwd.length - 1], legs: [], tail: b.tail, neck: b.fwd.slice(1, -1), jaw: null,
-    radius: 2, stepRate: 6, bob: 0.1, phase: 0, roaring: 0, biting: 0, lastStep: 0, wings: [], wingMode: 0, spread: 0, crouch: 0, air: 0,
+    radius: 2, stepRate: 6, roarFor: 1.6, bob: 0.1, phase: 0, roaring: 0, biting: 0, lastStep: 0, wings: [], wingMode: 0, spread: 0, crouch: 0, air: 0,
     ...o,
   };
 }
@@ -885,6 +887,7 @@ const BUILD: Record<DinoSpec['id'], (c: Colors) => Rig> = {
 /** Builds a dinosaur facing +z, standing on y = 0. `colors` overrides the species' own. */
 export function buildDino(spec: DinoSpec, colors = spec.colors): Rig {
   const r = BUILD[spec.id](colors);
+  r.root.userData.noFade = true; // never thinned out by the see-through effect, even in front of the camera
   r.root.updateMatrixWorld(true);
   // Merge every static part (teeth, claws, eyes, horns, scutes, toes…) into its joint: a few draw calls per animal.
   const moving: THREE.Object3D[] = [r.body, r.head, ...r.tail, ...r.neck, ...r.wings.map((w) => w.pivot)];
@@ -895,18 +898,27 @@ export function buildDino(spec: DinoSpec, colors = spec.colors): Rig {
 }
 
 /**
- * Walk cycle, idle breathing and the roar. `move` is 0 (standing) to 1 (full speed).
+ * Walk cycle, idle breathing and the roar. `move` is 0 (standing) to 1 (full speed); `speed` is the
+ * ground speed in units per second, which sets the step rate (without it, the rig's `stepRate` does).
  * Legs swing from the hip; on the forward swing the knee bends to lift the foot, and the ankle and
  * foot counter-rotate so the foot lands flat. Returns true on each footfall, for footstep sounds.
  */
-export function animate(r: Rig, dt: number, move: number, t: number): boolean {
-  r.phase += dt * r.stepRate * move;
+export function animate(r: Rig, dt: number, move: number, t: number, speed = 0): boolean {
+  // Stride: a planted foot travels from one end of the swing to the other in half a cycle.
+  // Running swings the legs wider. The step rate follows from the stride and the ground speed,
+  // so the feet stay put on the ground instead of gliding over it.
+  const reach = Math.min(...r.legs.map((l) => l.rest * Math.sin(l.amp * (0.55 + 0.65 * move))));
+  const stride = 2 * reach * r.root.scale.x;
+  r.phase += speed > 0 ? (dt * speed * Math.PI) / stride : dt * r.stepRate * move;
+  // Ease the legs back under the body when it stops.
+  const fade = Math.min(1, move / 0.12);
   let drop = 0;
   for (const l of r.legs) {
     const ph = r.phase + l.offset;
-    const swing = Math.sin(ph) * l.amp * move;
+    // Longer legs swing through a smaller angle for the same stride.
+    const swing = Math.sin(ph) * Math.asin(Math.min(1, reach / l.rest)) * fade;
     // The foot travels forward while the swing angle is falling: lift it then.
-    const lift = Math.max(0, -Math.cos(ph)) * move;
+    const lift = Math.max(0, -Math.cos(ph)) * fade * (0.6 + 0.4 * move);
     // Crouch: thigh forward, knee bent, ankle flexed. In the air: the whole leg tucked up.
     const ch = -l.bend * r.crouch * 0.5;
     const ck = l.bend * r.crouch * 1.05;
@@ -937,7 +949,7 @@ export function animate(r: Rig, dt: number, move: number, t: number): boolean {
   });
   // Roar: rear the head back and open wide.
   const roar = r.roaring > 0 ? Math.sin(Math.PI * Math.min(1, (1 - r.roaring) * 1.6)) : 0;
-  r.roaring = Math.max(0, r.roaring - dt / 1.6);
+  r.roaring = Math.max(0, r.roaring - dt / r.roarFor);
   r.head.rotation.y = 0;
   r.head.userData.base ??= r.head.rotation.x;
   // Bite: lunge forward and down, jaws wide open, then snap shut at the halfway point.

@@ -231,6 +231,187 @@ export function playNote(freq: number, inst: Instrument = 'piano', vol = 0.35) {
   }
 }
 
+// ---- Dinosaur voices ----
+// Big animals' calls (a lion's roar, a crocodile's bellow) are mostly breath: air pushed hard through
+// loose vocal folds that flap irregularly, a long throat, and a mouth that opens on "aah" and closes to
+// "ooh". So the voice is a soft, filtered tone with irregular wobble in pitch and loudness (never a
+// steady rate: that sounds like an engine), plus a lot of breath noise, both through moving formants,
+// with a deep rumble and a hiss, heard outdoors in a short, dark reverb.
+
+let space: { ac: AudioContext; in: ConvolverNode } | null = null;
+
+/** A shared reverb send: a second and a half of decaying noise, low-passed so it sounds outdoors. */
+function reverbSend(a: AudioContext, out: AudioNode): AudioNode {
+  if (!space || space.ac !== a) {
+    const len = Math.floor(a.sampleRate * 1.5);
+    const buf = a.createBuffer(2, len, a.sampleRate);
+    for (let c = 0; c < 2; c++) {
+      const d = buf.getChannelData(c);
+      let lp = 0;
+      for (let i = 0; i < len; i++) {
+        lp += (Math.random() * 2 - 1 - lp) * 0.25;
+        d[i] = lp * Math.pow(1 - i / len, 2.5) * 2;
+      }
+    }
+    const conv = a.createConvolver();
+    conv.buffer = buf;
+    const wet = a.createGain();
+    wet.gain.value = 0.3;
+    conv.connect(wet);
+    wet.connect(out);
+    space = { ac: a, in: conv };
+  }
+  return space.in;
+}
+
+let jitterBuf: AudioBuffer | null = null;
+/**
+ * Four seconds of smooth random wandering in -1..1: a new random level every 1/100 s, eased between.
+ * Played back faster or slower, it gives irregular wobble at any rate.
+ */
+function jitterBuffer(a: AudioContext) {
+  if (!jitterBuf || jitterBuf.sampleRate !== a.sampleRate) {
+    jitterBuf = a.createBuffer(1, a.sampleRate * 4, a.sampleRate);
+    const d = jitterBuf.getChannelData(0);
+    const step = Math.floor(a.sampleRate / 100);
+    let from = 0;
+    let to = Math.random() * 2 - 1;
+    for (let i = 0; i < d.length; i++) {
+      const k = (i % step) / step;
+      if (k === 0) {
+        from = to;
+        to = Math.random() * 2 - 1;
+      }
+      d[i] = from + (to - from) * (0.5 - Math.cos(k * Math.PI) / 2);
+    }
+  }
+  return jitterBuf;
+}
+
+/** Irregular wobble added to `param`: `rate` is roughly how many times a second it changes, `amount` how far. */
+function jitter(a: AudioContext, param: AudioParam, t: number, stop: number, rate: number, amount: number) {
+  const src = a.createBufferSource();
+  src.buffer = jitterBuffer(a);
+  src.loop = true;
+  src.playbackRate.value = rate / 100;
+  const g = a.createGain();
+  g.gain.value = amount;
+  src.connect(g);
+  g.connect(param);
+  src.start(t, Math.random() * 3.5);
+  src.stop(stop);
+}
+
+/** A bus for one call: straight to the speakers and into the reverb. Fade it to cut the call short. */
+function callBus(a: AudioContext, out: AudioNode, vol: number) {
+  const bus = a.createGain();
+  bus.gain.value = vol;
+  bus.connect(out);
+  bus.connect(reverbSend(a, out));
+  return bus;
+}
+
+/** Filtered noise into `dest`, following an envelope of [time, level] points (times from `t`). */
+function breath(a: AudioContext, dest: AudioNode, t: number, env: [number, number][], type: BiquadFilterType, freq: [number, number][], q = 1) {
+  const src = a.createBufferSource();
+  src.buffer = noiseBuffer(a);
+  src.loop = true;
+  const f = a.createBiquadFilter();
+  f.type = type;
+  f.Q.value = q;
+  f.frequency.setValueAtTime(freq[0][1], t);
+  for (const [at, v] of freq) f.frequency.linearRampToValueAtTime(v, t + at);
+  const g = a.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  for (const [at, v] of env) g.gain.linearRampToValueAtTime(v, t + at);
+  src.connect(f);
+  f.connect(g);
+  g.connect(dest);
+  const end = env[env.length - 1][0];
+  // Start somewhere random in the buffer so repeated calls don't sound identical.
+  src.start(t, Math.random() * 0.9);
+  src.stop(t + end + 0.05);
+}
+
+/**
+ * One call from a throat: a voiced tone at `f0` following `pitch` (multipliers at fractions of `dur`)
+ * mixed with breath (`breathy`, 0..1), through formants (frequency, Q, level) that move with `open`,
+ * at loudness `env`. `rough` is how ragged the vocal folds are.
+ */
+function growl(a: AudioContext, dest: AudioNode, t: number, dur: number, f0: number, o: {
+  pitch: [number, number][]; open: [number, number][]; env: [number, number][]; formants: [number, number, number][]; rough: number; breathy: number;
+}) {
+  const stop = t + dur + 0.05;
+  // Voice: a sawtooth softened by a low-pass (a pulse of air, not a buzz) and a sine for body,
+  // wandering irregularly in pitch around the contour.
+  const voiced = a.createGain();
+  for (const [type, vol] of [['sawtooth', 0.6], ['sine', 0.5]] as [OscillatorType, number][]) {
+    const osc = a.createOscillator();
+    osc.type = type;
+    osc.frequency.setValueAtTime(f0 * o.pitch[0][1], t);
+    for (const [at, m] of o.pitch) osc.frequency.linearRampToValueAtTime(f0 * m, t + at * dur);
+    jitter(a, osc.frequency, t, stop, 9, f0 * 0.05 * (0.5 + o.rough));
+    const g = a.createGain();
+    g.gain.value = vol;
+    osc.connect(g);
+    g.connect(voiced);
+    osc.start(t);
+    osc.stop(stop);
+  }
+  const soft = a.createBiquadFilter();
+  soft.type = 'lowpass';
+  soft.frequency.value = Math.max(f0 * 6, 420);
+  soft.Q.value = 0.5;
+  voiced.connect(soft);
+  // Rasp: loudness shaking irregularly, fast (the folds slapping) and slow (the breath pushing).
+  const rasp = a.createGain();
+  rasp.gain.value = 1 - o.rough * 0.25;
+  jitter(a, rasp.gain, t, stop, 70, o.rough * 0.45);
+  jitter(a, rasp.gain, t, stop, 6, 0.15);
+  soft.connect(rasp);
+  // Breath through the same throat.
+  const air = a.createBufferSource();
+  air.buffer = noiseBuffer(a);
+  air.loop = true;
+  const airGain = a.createGain();
+  airGain.gain.value = o.breathy;
+  air.connect(airGain);
+  air.start(t, Math.random() * 0.9);
+  air.stop(stop);
+  const throat = a.createGain();
+  rasp.connect(throat);
+  airGain.connect(throat);
+  const env = a.createGain();
+  env.gain.setValueAtTime(0.0001, t);
+  for (const [at, v] of o.env) env.gain.linearRampToValueAtTime(v, t + at * dur);
+  // The chest's weight below the formants (voice only: breath down there is just hiss).
+  const chest = a.createBiquadFilter();
+  chest.type = 'lowpass';
+  chest.frequency.value = f0 * 2.5;
+  rasp.connect(chest);
+  const chestGain = a.createGain();
+  chestGain.gain.value = 0.8;
+  chest.connect(chestGain);
+  chestGain.connect(env);
+  // Mouth: formants that slide as the jaw opens and closes.
+  for (const [freq, q, vol] of o.formants) {
+    const bp = a.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.value = q;
+    bp.frequency.setValueAtTime(freq * o.open[0][1], t);
+    for (const [at, m] of o.open) bp.frequency.linearRampToValueAtTime(freq * m, t + at * dur);
+    const g = a.createGain();
+    g.gain.value = vol * 2.2;
+    throat.connect(bp);
+    bp.connect(g);
+    g.connect(env);
+  }
+  env.connect(dest);
+}
+
+/** The roar that is sounding, so a new one can cut it off instead of piling on top. */
+let lastRoar: GainNode | null = null;
+
 export const sfx = {
   pop(pitch = 1) {
     voice('sine', 520 * pitch, 0.4, 0.13, 0, 1300 * pitch, 0.003);
@@ -306,23 +487,69 @@ export const sfx = {
   whoosh() {
     voice('sine', 900, 0.15, 0.35, 0, 140);
   },
-  /** Dinosaur roar: a long, deep bellow that swells and falls, with a ragged breath through it. `size` > 1 is deeper. */
-  roar(size = 1) {
-    voice('sawtooth', 96 / size, 0.22, 1.9, 0, 46 / size, 0.28);
-    voice('sawtooth', 99 / size, 0.12, 1.8, 0.02, 48 / size, 0.3);
-    voice('square', 68 / size, 0.1, 1.7, 0.04, 36 / size, 0.3);
-    voice('sawtooth', 190 / size, 0.05, 1.4, 0.08, 92 / size, 0.25);
-    noise(1.9, 0.3, 'lowpass', 520);
-    noise(1.3, 0.14, 'bandpass', 1100, 0.12);
+  /**
+   * Dinosaur roar, like a lion's roar or a crocodile's bellow made huge: a breathy "aah" that bursts out
+   * with a ragged rasp and slides down to "ooh" as the jaws close, over a deep, shuddering rumble, and
+   * ends in a hiss of breath. `size` > 1 is deeper and bigger. `short` is a sharp roar on the run.
+   */
+  roar(size = 1, short = false) {
+    if (!ac || !master || muted || ac.state !== 'running') return;
+    const t = ac.currentTime + 0.01;
+    // Cut off the previous roar.
+    lastRoar?.gain.setTargetAtTime(0, t, 0.06);
+    const dur = (short ? 1 : 2) * (0.92 + Math.random() * 0.16);
+    const bus = callBus(ac, master, 0.55);
+    lastRoar = bus;
+    const f0 = (40 / size) * (0.94 + Math.random() * 0.12);
+    // "Aah" formants of a long, wide throat (lower for bigger animals); `open` slides them towards "ooh".
+    const fs = 1 / Math.sqrt(size);
+    const swell: [number, number][] = short
+      ? [[0.07, 1], [0.4, 0.8], [0.8, 0.35], [1, 0.0001]]
+      : [[0.1, 0.75], [0.25, 1], [0.55, 0.8], [0.85, 0.3], [1, 0.0001]];
+    growl(ac, bus, t, dur, f0, {
+      pitch: [[0, 0.8], [0.15, 1.15], [0.4, 1], [0.75, 0.75], [1, 0.55]],
+      open: [[0, 0.75], [0.2, 1.05], [0.5, 0.9], [1, 0.55]],
+      env: swell,
+      formants: [[340 * fs, 4, 1], [660 * fs, 5, 0.45], [1600 * fs, 6, 0.1]],
+      rough: 0.8,
+      breathy: 0.5,
+    });
+    // The crocodile in it: a sub-bass rumble that shudders irregularly under the roar.
+    const rumble = ac.createGain();
+    rumble.gain.value = 0.8;
+    jitter(ac, rumble.gain, t, t + dur + 0.1, 14, 0.5);
+    rumble.connect(bus);
+    breath(ac, rumble, t, swell.map(([at, v]) => [at * dur, v * 1.4]), 'lowpass', [[0, 65 * fs], [dur, 40 * fs]], 1.5);
+    // The breath left over, hissed out through the teeth.
+    breath(ac, bus, t, [[dur * 0.6, 0.0001], [dur * 0.85, 0.12], [dur * 1.25, 0.0001]], 'bandpass', [[0, 2000], [dur * 1.25, 1400]], 0.8);
   },
   /** One beat of big leathery wings. */
   flap() {
     noise(0.22, 0.12, 'lowpass', 500);
   },
-  /** Big jaws snapping shut. */
+  /**
+   * Big jaws snapping shut: a snarl and a rush of breath as they lunge, then teeth clacking together
+   * with a heavy thunk of bone at 0.22 s (when the bite lands).
+   */
   chomp() {
-    noise(0.12, 0.3, 'bandpass', 900);
-    voice('square', 140, 0.12, 0.12, 0.16, 70);
+    if (!ac || !master || muted || ac.state !== 'running') return;
+    const t = ac.currentTime + 0.01;
+    const bus = callBus(ac, master, 0.55);
+    const shut = 0.21;
+    growl(ac, bus, t, 0.42, 70 * (0.94 + Math.random() * 0.12), {
+      pitch: [[0, 0.9], [0.4, 1.1], [1, 0.75]],
+      open: [[0, 0.7], [0.45, 1.1], [0.55, 0.6], [1, 0.5]],
+      env: [[0.15, 0.55], [0.45, 0.7], [0.55, 0.3], [1, 0.0001]],
+      formants: [[450, 4, 1], [950, 5, 0.6], [2200, 6, 0.2]],
+      rough: 1,
+      breathy: 0.7,
+    });
+    breath(ac, bus, t, [[0.05, 0.25], [shut, 0.5], [shut + 0.02, 0.05], [0.3, 0.0001]], 'bandpass', [[0, 500], [shut, 1500]], 0.8);
+    // Teeth: a hard, bright clack, a smaller rattle just after, and the jaw's weight behind it.
+    breath(ac, bus, t, [[shut, 0.0001], [shut + 0.003, 1.1], [shut + 0.035, 0.0001]], 'highpass', [[0, 2400]], 0.7);
+    breath(ac, bus, t, [[shut + 0.03, 0.0001], [shut + 0.033, 0.4], [shut + 0.06, 0.0001]], 'bandpass', [[0, 3200]], 2);
+    voice('sine', 150, 0.45, 0.16, shut, 50, 0.003);
+    voice('triangle', 420, 0.15, 0.05, shut, 180, 0.002);
   },
   /** Metal bars taking a hit. */
   clang() {

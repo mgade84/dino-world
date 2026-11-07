@@ -3,13 +3,14 @@ import type { GameContext } from '../types';
 import { ambience, noiseLoop, sfx, toneLoop } from '../engine/audio';
 import { L, type Txt } from '../i18n';
 import { animate, buildDino, disposeDinoAssets, DINOS, type DinoSpec, type Rig } from './dinos';
-import { buildWorld, groundY, HALF, rng, CAGE_SPOTS, POWER, SHORE } from './world';
+import { buildWorld, floorY, groundY, HALF, rng, CAGE_SPOTS, POWER, SHORE } from './world';
 import { CAGE, CAGE_HITS, CAR_COLORS, createCage, createCar, createPerson, disposePark, knockDown, posePerson, scare, updateCar, wreckCar, type Cage, type Car, type Person } from './park';
 import { createTown, type Building } from './buildings';
 import { createFences } from './fences';
 import { createSecurity } from './security';
 import { createStation, type Generator } from './station';
 import { createDocks } from './docks';
+import { createSeeThrough } from './seethrough';
 import { disposeMerged } from './merge';
 import { getQuality, getShowFps } from '../engine/storage';
 import { HERO, LEVELS, type Goal, type LevelDef } from './levels';
@@ -31,6 +32,8 @@ const HEAT = { every: 2500, max: 6 };
 const DART_HIT = 14;
 const ZAP_HIT = 20;
 const REGEN = { after: 5, rate: 6 };
+/** A new roar can start once the last one's `roaring` has fallen to this: its head-rear is over. */
+const ROAR_AGAIN = 0.375;
 /** Charging faster than this damages buildings and tears down dead fences. */
 const CHARGE = 5;
 /** Sedation: seconds until the screen is black, and until the dinosaur wakes at the checkpoint. */
@@ -498,6 +501,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   const arrowMat = keep(new THREE.MeshBasicMaterial({ color: '#ffb020', transparent: true, depthWrite: false }));
   const arrow = new THREE.Mesh(arrowGeo, arrowMat);
   arrow.scale.setScalar(1.4);
+  arrow.userData.noFade = true;
   scene.add(arrow);
 
   // Ripples when wading through the lake.
@@ -696,7 +700,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     const building = town.collide(p, radius, v);
     touchedGen = station.collide(p, radius, v);
     const run = Math.hypot(p.x - from.x, p.z - from.z);
-    const rise = groundY(p.x, p.z) - from.y;
+    const rise = floorY(p.x, p.z) - from.y;
     const tooSteep = airborne ? rise > 0.25 : run > 1e-4 && rise / run > CLIMB && rise > 0.05;
     if (tooSteep) {
       p.x = from.x;
@@ -759,7 +763,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
 
   /** The roar button: bites the bars when close to them, otherwise roars. */
   function act() {
-    if (!player || picking || paused || sedated > 0 || player.roaring > 0 || player.biting > 0) return;
+    if (!player || picking || paused || sedated > 0 || player.roaring > ROAR_AGAIN || player.biting > 0) return;
     const target = biteTarget();
     if (!target || !grounded) return roar();
     player.biting = 1;
@@ -783,9 +787,12 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   }
 
   function roar() {
-    if (!player || picking || paused || sedated > 0 || player.roaring > 0) return;
+    if (!player || picking || paused || sedated > 0 || player.roaring > ROAR_AGAIN) return;
+    // On the run: a short, sharp roar, and another as soon as the head comes back down.
+    const running = Math.hypot(vel.x, vel.z) > spec.speed * 0.4;
     player.roaring = 1;
-    sfx.roar(spec.roar);
+    player.roarFor = running ? 0.8 : 1.6;
+    sfx.roar(spec.roar, running);
     shake = 0.5;
     const p = player.root.position;
     if (free) security?.roar(p, 26);
@@ -799,7 +806,15 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       n.wait = 0;
     }
   }
-  roarBtn.addEventListener('click', act);
+  // On press, not on click: iPad Safari drops clicks from a second finger while one is on the stick,
+  // so a click-only button couldn't roar on the move. Keyboard activation (detail 0) still clicks.
+  roarBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    act();
+  });
+  roarBtn.addEventListener('click', (e) => {
+    if (e.detail === 0) act();
+  });
   jumpBtn.addEventListener('pointerdown', (e) => {
     jumpBtn.setPointerCapture(e.pointerId);
     jumpDown();
@@ -997,9 +1012,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       right.set(-Math.cos(camYaw), 0, Math.sin(camYaw));
       dir.set(0, 0, 0);
       if (amount > 0.15) dir.addScaledVector(fwd, ahead).addScaledVector(right, side).normalize();
-      // Speed comes from how far up the stick is pushed; sideways or back only walks.
-      const pace = amount <= 0.15 ? 0 : ahead > 0.15 ? Math.min(1, ahead) : amount * 0.45;
-      const wet = world.inWater(p.x, p.z);
+      // Speed comes from how far the stick is pushed, the same in every direction.
+      const pace = amount <= 0.15 ? 0 : amount;
+      const wet = world.inWater(p.x, p.z) && floorY(p.x, p.z) < 0;
       if (wet && !wasWet) sfx.splat();
       wasWet = wet;
       // Pushing roughly towards bars it is already touching: push straight in and face them squarely,
@@ -1009,7 +1024,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       const steer = pace > 0 ? Math.atan2(dir.x, dir.z) : null;
       // Flyers in the air go at flying speed, high above trees and cages.
       const aloft = !!spec.fly && (flying || !grounded);
-      const high = aloft && p.y - groundY(p.x, p.z) > 7;
+      const high = aloft && p.y - floorY(p.x, p.z) > 7;
       const want = dir.multiplyScalar((aloft ? spec.fly! : spec.speed) * pace * (wet && !aloft ? 0.55 : 1));
       vel.lerp(want, 1 - Math.exp(-dt * (aloft ? 2.5 : grounded ? 6 : 1.5)));
       if (high) {
@@ -1123,7 +1138,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         }
       }
       // Gravity, jumping, and walking down hills without bouncing.
-      const g = groundY(p.x, p.z);
+      const g = floorY(p.x, p.z);
       if (spec.fly && flying) {
         // Climb to cruising height (lower inside the cage, so it still has to bite its way out).
         const alt = g + (free ? 13 : 4.5);
@@ -1166,7 +1181,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       player.root.rotation.y = heading;
       const move = THREE.MathUtils.clamp(speed / spec.speed, 0, 1);
       // Heavy footfalls: a thud, and the camera shakes with each one.
-      if (animate(player, dt, grounded ? move : 0, t) && grounded && (spec.id === 'trex' || spec.id === 'brachio')) {
+      if (animate(player, dt, grounded ? move : 0, t, grounded ? speed : 0) && grounded && (spec.id === 'trex' || spec.id === 'brachio')) {
         sfx.step(spec.id === 'brachio' ? 1.4 : 1.1);
         shake = Math.max(shake, 0.18 * move);
       }
@@ -1356,11 +1371,11 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     c.vel.lerp(dir.divideScalar(d || 1).multiplyScalar(move * speed), 1 - Math.exp(-dt * 4));
     moveOnGround(p, c.vel, dt, c.rig.radius, false);
     c.cage.contain(p, c.vel, c.rig.radius, Infinity);
-    p.y = groundY(p.x, p.z);
+    p.y = floorY(p.x, p.z);
     const sp = c.vel.length();
     if (sp > 0.3) c.heading = turnToward(c.heading, Math.atan2(c.vel.x, c.vel.z), dt * 5);
     c.rig.root.rotation.y = c.heading;
-    animate(c.rig, dt, THREE.MathUtils.clamp(sp / 6, 0, 1), t + c.heading);
+    animate(c.rig, dt, THREE.MathUtils.clamp(sp / 6, 0, 1), t + c.heading, sp);
   }
 
   function updateNpc(n: Npc, dt: number) {
@@ -1390,11 +1405,11 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       const min = player.radius + n.rig.radius;
       if (d < min && d > 1e-3) p.addScaledVector(away.divideScalar(d), min - d);
     }
-    p.y = groundY(p.x, p.z);
+    p.y = floorY(p.x, p.z);
     const speed = n.vel.length();
     if (speed > 0.3) n.heading = turnToward(n.heading, Math.atan2(n.vel.x, n.vel.z), dt * 5);
     n.rig.root.rotation.y = n.heading;
-    animate(n.rig, dt, THREE.MathUtils.clamp(speed / (n.speed * 1.6), 0, 1), t + n.speed);
+    animate(n.rig, dt, THREE.MathUtils.clamp(speed / (n.speed * 1.6), 0, 1), t + n.speed, speed);
     // Stuck against a tree: rest, then pick somewhere else.
     n.stuck = move > 0 && speed < 0.4 ? n.stuck + dt : 0;
     if (n.stuck > 1.2) {
@@ -1430,6 +1445,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       }
     } else fastWindows = 0;
   }
+  // Thin out whatever stands between the camera and the dinosaur.
+  const seeThrough = createSeeThrough(scene, camera, renderer);
+  const seeHead = new THREE.Vector3();
   function frame(now: number) {
     raf = requestAnimationFrame(frame);
     const raw = now - last;
@@ -1437,6 +1455,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     const dt = THREE.MathUtils.clamp(raw / 1000, 0, 0.05);
     last = now;
     update(dt);
+    if (player) player.head.getWorldPosition(seeHead);
+    seeThrough.update(dt, !!player && intro < 0 && !picking, player ? player.root.position : camAt, seeHead, player ? player.radius : 1);
     renderer.render(scene, camera);
     // Measured over about a second of real time (frames longer than a second are pauses, not slowness).
     if (raw > 0 && raw < 1000) {
@@ -1512,6 +1532,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     disposeDinoAssets();
     disposePark();
     disposeMerged();
+    seeThrough.dispose();
     renderer.dispose();
     renderer.forceContextLoss();
     canvas.remove();

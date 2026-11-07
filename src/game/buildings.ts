@@ -1,9 +1,9 @@
 import * as THREE from 'three';
-import { groundY, TOWN } from './world';
+import { DOCKS, groundY, TOWN } from './world';
 import { bake } from './merge';
 
 /**
- * Main Street's buildings, each made of pre-broken pieces: wall panels, window glass and roof slabs.
+ * Main Street's buildings (and the boat shed at the docks), each made of pre-broken pieces: wall panels, window glass and roof slabs.
  * A charging dinosaur knocks panels loose; enough hits and the whole building comes down into rubble,
  * in a cloud of dust. Rubble doesn't block anything.
  */
@@ -51,7 +51,7 @@ export interface Town {
   dispose(): void;
 }
 
-interface Plan { x: number; z: number; w: number; d: number; h: number; wall: string; roof: string; awning?: string; hp: number }
+interface Plan { x: number; z: number; w: number; d: number; h: number; wall: string; roof: string; awning?: string; hp: number; /** Which way the door faces (+1 north, -1 south); by default, the street. */ front?: number }
 
 /** Two rows of buildings facing each other across the road. */
 const PLANS: Plan[] = [
@@ -61,6 +61,8 @@ const PLANS: Plan[] = [
   { x: -90, z: 89.5, w: 10, d: 7, h: 5.2, wall: '#9a9488', roof: '#33302d', awning: '#4a5a2f', hp: 3 },
   { x: -73, z: 90, w: 14, d: 8, h: 7.4, wall: '#a39f95', roof: '#2c2a28', hp: 5 },
   { x: -58, z: 89.5, w: 8, d: 6, h: 4.2, wall: '#ab9f8a', roof: '#3a3632', hp: 3 },
+  // The boat shed on the docks' landing, its doors facing the sea.
+  { x: DOCKS.x - 10, z: DOCKS.z - 1, w: 8, d: 6, h: 4, wall: '#6a675e', roof: '#2e2c2a', hp: 3, front: 1 },
 ];
 
 const GRAVITY = 30;
@@ -104,7 +106,7 @@ export function createTown(scene: THREE.Scene): Town {
     };
     const wall = mat(p.wall);
     // The street-facing side gets the door and shop windows.
-    const front = p.z < TOWN.z ? 1 : -1;
+    const front = p.front ?? (p.z < TOWN.z ? 1 : -1);
     const rows = Math.max(2, Math.round(p.h / 2.3));
     const rowH = p.h / rows;
     const faces: { len: number; n: [number, number]; axis: 'x' | 'z'; off: number }[] = [

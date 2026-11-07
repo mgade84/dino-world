@@ -39,6 +39,8 @@ export const POWER: Site = { x: -95, z: -25, w: 26, d: 22, y: 2.5 };
 export const DOCKS: Site = { x: 25, z: 94, w: 34, d: 14, y: 1.2 };
 /** North of this the land drops away into the sea. */
 export const SHORE = 103;
+/** The docks' pier, out over the sea: its centre line, start, end, width and deck height (level with the landing). */
+export const PIER = { x: DOCKS.x, z0: SHORE - 6, z1: 124, w: 4.4, deck: DOCKS.y };
 const SITES = [TOWN, POWER, DOCKS];
 /** Electric fence lines, as [x1, z1, x2, z2]; kept clear of trees and rocks. */
 export const FENCE_LINES: [number, number, number, number][] = [
@@ -93,6 +95,12 @@ export function groundY(x: number, z: number): number {
   // The north coast: a short beach, then the sea floor.
   h += (-3.5 - h) * smooth(SHORE - 4, SHORE + 8, z);
   return h;
+}
+
+/** What something walking stands on: the ground, or the pier's deck where that is higher. */
+export function floorY(x: number, z: number): number {
+  const g = groundY(x, z);
+  return Math.abs(x - PIER.x) < PIER.w / 2 && z > PIER.z0 && z < PIER.z1 ? Math.max(g, PIER.deck) : g;
 }
 
 /** Steepness (rise over run) at a point. */
@@ -209,6 +217,7 @@ export function buildWorld(): World {
   groundGeo.computeVertexNormals();
   const ground = new THREE.Mesh(groundGeo, keep(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78 })));
   ground.receiveShadow = true;
+  ground.userData.noFade = true; // the see-through effect leaves the ground, roads and water alone
   group.add(ground);
 
   // ---- Main Street: a wet asphalt road with kerbs and pavements ----
@@ -220,6 +229,7 @@ export function buildWorld(): World {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);
     m.receiveShadow = true;
+    m.userData.noFade = true;
     group.add(m);
   };
   slab(TOWN.w + 6, TOWN.d - 2, paving, TOWN.x, TOWN.z, TOWN.y + 0.03);
@@ -233,6 +243,7 @@ export function buildWorld(): World {
   const water = new THREE.Mesh(lakeGeo, keep(new THREE.MeshStandardMaterial({ color: '#2c4146', roughness: 0.08, metalness: 0.3, transparent: true, opacity: 0.94 })));
   water.position.set(LAKE.x, 0.04, LAKE.z);
   water.receiveShadow = true;
+  water.userData.noFade = true;
   group.add(water);
 
   // ---- The sea off the north coast ----
@@ -241,6 +252,7 @@ export function buildWorld(): World {
   const sea = new THREE.Mesh(seaGeo, keep(new THREE.MeshStandardMaterial({ color: '#233438', roughness: 0.1, metalness: 0.35 })));
   sea.position.set(0, 0.02, SHORE + 80 - 6);
   sea.receiveShadow = true;
+  sea.userData.noFade = true;
   group.add(sea);
 
   // ---- Volcano, with a glowing crater and puffs of smoke ----
