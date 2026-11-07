@@ -3,6 +3,26 @@ import { groundY } from './world';
 import { bake } from './merge';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
+/** Wheel arches: centred at the axle height, wide enough for the tyres. */
+const ARCH = { y: 0.58, r: 0.68 };
+/**
+ * A car panel's side profile (z, y), extruded across the car (x) to `width`, with rounded edges.
+ * ['arc', z] cuts a wheel arch centred at z up into the bottom edge.
+ */
+function carProfile(pts: ([number, number] | ['arc', number])[], width: number, bevel: number) {
+  const shape = new THREE.Shape();
+  pts.forEach((p, i) => {
+    if (p[0] === 'arc') shape.absarc(p[1], ARCH.y, ARCH.r, Math.PI, 0, true);
+    else if (i === 0) shape.moveTo(p[0], p[1]);
+    else shape.lineTo(p[0], p[1]);
+  });
+  const depth = width - 2 * bevel;
+  const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: bevel > 0, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 2, curveSegments: 8 });
+  geo.rotateY(-Math.PI / 2);
+  geo.translate(depth / 2, 0, 0);
+  return geo;
+}
+
 /** The player's cage: centred on the start, big enough for a Brachiosaurus, too tall to jump out of. All cages share its size. */
 export const CAGE = { x: 0, z: 6, half: 7, height: 9 };
 /** Bumps a side takes before its bars bend far enough to squeeze through. */
@@ -12,6 +32,20 @@ const GEO = {
   box: new THREE.BoxGeometry(1, 1, 1),
   cyl: new THREE.CylinderGeometry(1, 1, 1, 10),
   sphere: new THREE.SphereGeometry(1, 10, 8),
+  cyl6: new THREE.CylinderGeometry(1, 1, 1, 6),
+  cyl16: new THREE.CylinderGeometry(1, 1, 1, 16),
+  cone: new THREE.ConeGeometry(1, 1, 8),
+  /** A triangular prism (a three-sided cylinder), for warning signs. */
+  tri: new THREE.CylinderGeometry(1, 1, 1, 3),
+  /** Half a ring: a wheel-arch flare. */
+  flare: new THREE.TorusGeometry(1, 0.09, 4, 12, Math.PI),
+  carShell: carProfile([
+    [-2.25, 0.62], [-2.13, 0.62], ['arc', -1.45], [0.77, 0.58], ['arc', 1.45], [2.3, 0.62],
+    [2.33, 1.15], [2.22, 1.32], [0.95, 1.48], [-2.2, 1.52], [-2.27, 1.4],
+  ], 2.24, 0.05),
+  carCabin: carProfile([[0.95, 1.45], [0.2, 2.4], [0.02, 2.47], [-1.95, 2.5], [-2.12, 2.42], [-2.2, 1.45]], 2.0, 0.05),
+  carFrontWindow: carProfile([[0.78, 1.62], [0.22, 2.3], [-0.52, 2.33], [-0.52, 1.62]], 2.05, 0),
+  carRearWindow: carProfile([[-0.72, 1.62], [-0.72, 2.34], [-1.9, 2.36], [-2.03, 2.25], [-2.07, 1.62]], 2.05, 0),
 };
 const mats = new Map<string, THREE.MeshLambertMaterial>();
 const mat = (color: string) => {
@@ -69,17 +103,23 @@ export interface Cage {
 
 export function createCage(cx = CAGE.x, cz = CAGE.z): Cage {
   const root = new THREE.Group();
-  const steel = mat('#5b6470');
+  const steel = mat('#6b737b');
   const post = mat('#3a4049');
   const concrete = mat('#b9b4aa');
+  const footing = mat('#9a958b');
+  const dark = mat('#1d1f22');
+  const yellow = mat('#e8b923');
   const { half, height } = CAGE;
+  const count = 8;
+  const gap = (2 * half) / (count + 1);
+  /** Heights of the horizontal rails above each bar's holder: two on the lower bar, two on the upper. */
+  const RAILS = { lower: [1.7, 3.9], upper: [1.9, 4.35] };
   const sides: Side[] = [
     [1, 0], [-1, 0], [0, 1], [0, -1],
   ].map(([nx, nz]) => {
     const n = new THREE.Vector3(nx, 0, nz);
     const t = new THREE.Vector3(-nz, 0, nx);
     const bars: Bar[] = [];
-    const count = 8;
     for (let k = 0; k < count; k++) {
       const s = -half + ((k + 1) * 2 * half) / (count + 1);
       const x = cx + n.x * half + t.x * s;
@@ -87,30 +127,118 @@ export function createCage(cx = CAGE.x, cz = CAGE.z): Cage {
       // Holder faces outwards (local +z = n), so bending is a rotation about local x.
       const holder = group(root, [x, groundY(x, z) - 0.3, z], [0, Math.atan2(n.x, n.z), 0]);
       const lower = group(holder);
-      part(lower, GEO.cyl, steel, [0.13, height / 2, 0.13], [0, height / 4, 0]);
+      part(lower, GEO.cyl, steel, [0.15, height / 2, 0.15], [0, height / 4, 0]);
+      // Each bar carries its share of the horizontal rails, so a bent bar takes its rails with it.
+      for (const y of RAILS.lower) part(lower, GEO.cyl6, steel, [0.065, gap, 0.065], [0, y, 0], [0, 0, Math.PI / 2]);
       const upper = group(lower, [0, height / 2, 0]);
-      part(upper, GEO.cyl, steel, [0.13, height / 2, 0.13], [0, height / 4, 0]);
-      part(upper, GEO.sphere, post, [0.2, 0.2, 0.2], [0, height / 2, 0]);
+      part(upper, GEO.cyl, steel, [0.15, height / 2, 0.15], [0, height / 4, 0]);
+      for (const y of RAILS.upper) part(upper, GEO.cyl6, steel, [0.065, gap, 0.065], [0, y, 0], [0, 0, Math.PI / 2]);
+      // Anti-climb overhang: the top of each bar leans inwards, with a rail and a spike at the tip.
+      const lean = Math.SQRT1_2;
+      part(upper, GEO.cyl6, steel, [0.09, 1, 0.09], [0, height / 2 + lean / 2, -lean / 2], [-Math.PI / 4, 0, 0]);
+      part(upper, GEO.cyl6, steel, [0.055, gap, 0.055], [0, height / 2 + lean, -lean], [0, 0, Math.PI / 2]);
+      part(upper, GEO.cone, post, [0.11, 0.3, 0.11], [0, height / 2 + lean + 0.1, -lean - 0.1], [-Math.PI / 4, 0, 0]);
       bars.push({ lower, upper, s });
     }
+    // The rail ends between the corner posts and the first and last bars (fixed).
+    for (const end of [-1, 1]) {
+      const s = end * (half - gap / 4);
+      const x = cx + n.x * half + t.x * s;
+      const z = cz + n.z * half + t.z * s;
+      const holder = group(root, [x, groundY(x, z) - 0.3, z], [0, Math.atan2(n.x, n.z), 0]);
+      for (const y of [...RAILS.lower, ...RAILS.upper.map((u) => u + height / 2)]) part(holder, GEO.cyl6, steel, [0.065, gap / 2, 0.065], [0, y, 0], [0, 0, Math.PI / 2]);
+    }
+    // Footing: a wide slab, and a kerb the bars are set into.
     const mx = cx + n.x * half;
     const mz = cz + n.z * half;
-    const curb = part(root, GEO.box, concrete, [Math.abs(t.x) * 2 * half + 0.9, 0.7, Math.abs(t.z) * 2 * half + 0.9], [mx, groundY(mx, mz) + 0.05, mz]);
-    curb.castShadow = false;
+    const g = groundY(mx, mz);
+    const along = (len: number, across: number, y: number, h: number, m: THREE.Material) =>
+      part(root, GEO.box, m, [Math.abs(t.x) * len + Math.abs(n.x) * across, h, Math.abs(t.z) * len + Math.abs(n.z) * across], [mx, g + y, mz]);
+    along(2 * half + 1.8, 1.7, 0.05, 0.5, footing).castShadow = false;
+    along(2 * half + 0.9, 0.85, 0.35, 0.8, concrete).castShadow = false;
     return { n, t, bars, damage: 0, open: false, shake: 0, dir: 1 };
   });
-  for (const [sx, sz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
-    const x = cx + sx * half;
-    const z = cz + sz * half;
-    part(root, GEO.box, post, [0.55, height + 0.6, 0.55], [x, groundY(x, z) + height / 2 - 0.1, z]);
+
+  const corner = (sx: number, sz: number, out: number): [number, number, number] => {
+    const x = cx + sx * (half + out);
+    const z = cz + sz * (half + out);
+    return [x, groundY(x, z), z];
+  };
+  const up = new THREE.Vector3(0, 1, 0);
+  /** A round strut from a to b. */
+  function strut(a: THREE.Vector3, b: THREE.Vector3, r: number, m: THREE.Material) {
+    const d = b.clone().sub(a);
+    const mesh = part(root, GEO.cyl, m, [r, d.length(), r], [(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2]);
+    mesh.quaternion.setFromUnitVectors(up, d.normalize());
+    return mesh;
   }
-  // Yellow-and-black warning boards on the front corner posts.
-  const stripeA = mat('#ffcc00');
-  const stripeB = mat('#222222');
-  for (const sx of [1, -1]) {
-    const x = cx + sx * (half + 0.35);
-    const z = cz - half;
-    for (let k = 0; k < 4; k++) part(root, GEO.box, k % 2 ? stripeB : stripeA, [0.12, 0.35, 0.9], [x, groundY(x, z) + 3 + k * 0.35, z]);
+  for (const [sx, sz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+    const [x, g, z] = corner(sx, sz, 0);
+    // Corner posts: steel I-beams with cap plates, hazard-striped at the bottom.
+    const H = height + 0.8;
+    part(root, GEO.box, post, [0.14, H, 0.5], [x, g + H / 2 - 0.1, z]);
+    for (const f of [-1, 1]) part(root, GEO.box, post, [0.6, H, 0.1], [x, g + H / 2 - 0.1, z + f * 0.25]);
+    part(root, GEO.box, post, [0.75, 0.08, 0.75], [x, g + H - 0.08, z]);
+    part(root, GEO.box, dark, [0.9, 0.1, 0.9], [x, g + 0.8, z]);
+    for (let k = 0; k < 4; k++) part(root, GEO.box, k % 2 ? dark : yellow, [0.66, 0.3, 0.66], [x, g + 1.0 + k * 0.3, z]);
+    // A diagonal brace from high on the post down to a concrete anchor outside the corner.
+    const d = new THREE.Vector3(sx, 0, sz).normalize();
+    const top = new THREE.Vector3(x, g + 6, z).addScaledVector(d, 0.3);
+    const foot = new THREE.Vector3(x, g + 0.4, z).addScaledVector(d, 3.4);
+    strut(top, foot, 0.13, post);
+    part(root, GEO.box, concrete, [1, 0.6, 1], [foot.x, groundY(foot.x, foot.z) + 0.15, foot.z], [0, Math.PI / 4, 0]);
+  }
+
+  // The front (-z) side is the gate: a sliding gate on a track, a motor housing, hinges and a lock.
+  const front = cz - half;
+  const fg = groundY(cx, front);
+  part(root, GEO.box, dark, [2 * half, 0.08, 0.14], [cx, fg + 0.79, front - 0.32]);
+  const [lx, lg, lz] = corner(-1, -1, 0);
+  for (const y of [1.6, 4.6, 7.6]) part(root, GEO.box, dark, [0.3, 0.45, 0.3], [lx + 0.45, lg + y, lz - 0.05]);
+  part(root, GEO.box, mat('#58605a'), [1.3, 1.1, 0.9], [lx + 0.6, lg + 0.55, lz - 1.25]);
+  part(root, GEO.box, dark, [1.4, 0.1, 1.0], [lx + 0.6, lg + 1.15, lz - 1.25]);
+  part(root, GEO.cyl6, dark, [0.06, 1.3, 0.06], [lx + 0.05, lg + 0.9, lz - 0.75], [Math.PI / 2, 0, 0]);
+  const [rx, rg, rz] = corner(1, -1, 0);
+  part(root, GEO.box, mat('#c9a227'), [0.5, 0.75, 0.3], [rx - 0.5, rg + 4.5, rz - 0.3]);
+  part(root, GEO.box, dark, [0.32, 0.12, 0.05], [rx - 0.5, rg + 4.7, rz - 0.47]);
+  part(root, GEO.sphere, mat('#b03a2e'), [0.06, 0.06, 0.04], [rx - 0.5, rg + 4.35, rz - 0.47]);
+  // An electrical cabinet beside the gate, its conduit running into the kerb.
+  part(root, GEO.box, mat('#6e7470'), [0.85, 1.5, 0.5], [rx - 1.8, rg + 0.75, rz - 1.5]);
+  part(root, GEO.box, dark, [0.9, 0.06, 0.55], [rx - 1.8, rg + 1.52, rz - 1.5]);
+  part(root, GEO.box, yellow, [0.3, 0.3, 0.02], [rx - 1.8, rg + 1.1, rz - 1.76]);
+  part(root, GEO.cyl6, dark, [0.06, 1.1, 0.06], [rx - 1.8, rg + 0.35, rz - 0.95], [Math.PI / 2, 0, 0]);
+
+  // Warning signs on both front corner posts: a red header band, a warning triangle and lines of "text".
+  for (const sx of [-1, 1]) {
+    const [x, g, z] = corner(sx, -1, 0);
+    const sz = z - 0.36;
+    const y = g + 3.3;
+    part(root, GEO.box, dark, [1.45, 1.15, 0.04], [x, y, sz + 0.02]);
+    part(root, GEO.box, yellow, [1.35, 1.05, 0.04], [x, y, sz]);
+    part(root, GEO.box, mat('#a8322a'), [1.35, 0.24, 0.02], [x, y + 0.4, sz - 0.03]);
+    part(root, GEO.box, mat('#f2efe6'), [0.8, 0.06, 0.02], [x, y + 0.4, sz - 0.045]);
+    part(root, GEO.tri, dark, [0.3, 0.02, 0.3], [x - 0.35, y - 0.08, sz - 0.03], [-Math.PI / 2, 0, 0]);
+    part(root, GEO.tri, yellow, [0.2, 0.02, 0.2], [x - 0.35, y - 0.1, sz - 0.045], [-Math.PI / 2, 0, 0]);
+    part(root, GEO.box, dark, [0.05, 0.12, 0.02], [x - 0.35, y - 0.07, sz - 0.06]);
+    for (let k = 0; k < 3; k++) part(root, GEO.box, dark, [0.55 - k * 0.1, 0.05, 0.02], [x + 0.25 - k * 0.05, y + 0.05 - k * 0.15, sz - 0.03]);
+  }
+
+  // Floodlights on tall poles behind the back wall (clear of the corner braces), angled down into the paddock.
+  const lens = mat('#f2efe0');
+  for (const sx of [-1, 1]) {
+    const x = cx + sx * (half - 2.5);
+    const z = cz + half + 1.6;
+    const g = groundY(x, z);
+    part(root, GEO.box, concrete, [0.9, 0.5, 0.9], [x, g + 0.1, z]);
+    part(root, GEO.cyl, post, [0.12, 12.5, 0.12], [x, g + 6.25, z]);
+    const head = group(root, [x, g + 12.3, z], [0, Math.atan2(cx - x, cz - z), 0]);
+    part(head, GEO.box, post, [0.1, 0.1, 1.1], [0, 0, 0.5]);
+    part(head, GEO.box, post, [1.3, 0.08, 0.08], [0, -0.1, 1.0]);
+    for (const hx of [-0.5, 0.5]) {
+      const lamp = group(head, [hx, -0.1, 1.05], [0.55, 0, 0]);
+      part(lamp, GEO.box, mat('#2d3136'), [0.8, 0.5, 0.35], [0, 0, 0]);
+      part(lamp, GEO.box, lens, [0.65, 0.36, 0.02], [0, 0, 0.18]);
+    }
   }
 
   // Bars move (they bend when bitten); everything else in the cage is one mesh per material.
@@ -252,7 +380,7 @@ export const CAR_COLORS = ['#5f8f3e', '#d9c27a', '#f2f0e6', '#c94a3a', '#f4b63a'
 
 export interface Car {
   group: THREE.Group;
-  body: THREE.MeshLambertMaterial;
+  body: THREE.MeshStandardMaterial;
   heading: number;
   wrecked: boolean;
   /** Seconds since it was wrecked. */
@@ -266,32 +394,96 @@ export interface Car {
 const smokeMat = new THREE.MeshLambertMaterial({ color: '#4a4a4a', transparent: true, opacity: 0.55, depthWrite: false });
 const glassMat = new THREE.MeshLambertMaterial({ color: '#bfe6ff', transparent: true, opacity: 0.55 });
 
-/** A chunky open safari jeep facing +z, wheels on y = 0. */
+/** Height of the roof gear (rack and light bar) above the wheels' ground line: a wreck rests on it. */
+const CAR_ROOF = 2.8;
+
+/**
+ * A park utility vehicle facing +z, wheels on y = 0: a bevelled body with wheel arches and flares,
+ * tinted glass, a bull bar, a roof rack and light bar, a snorkel and a spare wheel, in the park's paint
+ * with a side stripe and a plain round door emblem, muddy low down. Two draw calls: the paint (which
+ * darkens when wrecked) and everything else, baked into vertex colours.
+ */
 export function createCar(color: string, stripe: string): Car {
   const g = new THREE.Group();
-  const body = new THREE.MeshLambertMaterial({ color, flatShading: true });
+  const body = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.25 });
   body.userData.dynamic = true; // darkens when wrecked
   owned.push(body);
-  const tire = mat('#2a2a2a');
-  const rim = mat('#c9c9c9');
-  const bar = mat('#4a4f55');
-  part(g, GEO.box, body, [2.3, 0.75, 4.4], [0, 1.0, 0]);
-  part(g, GEO.box, body, [2.2, 0.45, 1.5], [0, 1.55, 1.35]);
-  part(g, GEO.box, mat(stripe), [2.34, 0.18, 4.2], [0, 1.05, 0]);
-  part(g, GEO.box, mat('#3b3b3b'), [2.0, 0.3, 0.25], [0, 0.8, 2.25]);
-  part(g, GEO.box, glassMat, [2.1, 0.75, 0.06], [0, 2.1, 0.55], [-0.25, 0, 0]);
-  for (const x of [-1.05, 1.05]) {
-    part(g, GEO.cyl, bar, [0.07, 1.4, 0.07], [x, 2.05, -0.6]);
-    part(g, GEO.cyl, bar, [0.07, 1.1, 0.07], [x, 1.9, 0.55], [-0.25, 0, 0]);
+  const tire = mat('#232221');
+  const rim = mat('#8c9196');
+  const trim = mat('#2b2d30');
+  const black = mat('#141516');
+  const glass = mat('#1b232a');
+  const mud = mat('#5b4a36');
+  const chrome = mat('#b9bec2');
+  const stripeMat = mat(stripe);
+  const X = 1.12; // the body's side faces
+  // Body shell (with the wheel arches cut out) and the cabin on top, narrower than the body.
+  part(g, GEO.carShell, body, [1, 1, 1]);
+  part(g, GEO.carCabin, body, [1, 1, 1]);
+  // Tinted side windows, standing just proud of the cabin, and the B-pillar between them.
+  part(g, GEO.carFrontWindow, glass, [1, 1, 1]);
+  part(g, GEO.carRearWindow, glass, [1, 1, 1]);
+  for (const s of [-1, 1]) part(g, GEO.box, body, [0.06, 0.74, 0.16], [s * 1.01, 1.98, -0.62]);
+  // Raked windscreen and the rear window.
+  part(g, GEO.box, glass, [1.75, 0.95, 0.03], [0, 1.97, 0.63], [-0.668, 0, 0]);
+  part(g, GEO.box, glass, [1.6, 0.6, 0.03], [0, 2.05, -2.25]);
+  // Arch liners, so the arches don't show daylight through the body, and the underbody.
+  for (const z of [-1.45, 1.45]) part(g, GEO.box, black, [1.5, 0.75, 1.3], [0, 0.85, z]);
+  part(g, GEO.box, black, [1.5, 0.22, 3.4], [0, 0.55, 0]);
+  // Wheels: chunky tyres on steel rims with hubs, under black arch flares.
+  for (const [x, z] of [[-1, 1.45], [1, 1.45], [-1, -1.45], [1, -1.45]] as const) {
+    part(g, GEO.cyl16, tire, [0.58, 0.44, 0.58], [x, 0.58, z], [0, 0, Math.PI / 2]);
+    part(g, GEO.cyl16, rim, [0.34, 0.46, 0.34], [x, 0.58, z], [0, 0, Math.PI / 2]);
+    part(g, GEO.cyl6, trim, [0.12, 0.48, 0.12], [x, 0.58, z], [0, 0, Math.PI / 2]);
+    part(g, GEO.flare, trim, [0.74, 0.74, 1.6], [Math.sign(x) * 1.15, ARCH.y, z], [0, Math.PI / 2, 0]);
   }
-  part(g, GEO.cyl, bar, [0.07, 2.1, 0.07], [0, 2.75, -0.6], [0, 0, Math.PI / 2]);
-  for (const x of [-0.6, 0.6]) part(g, GEO.box, mat('#7a5a3a'), [0.7, 0.6, 0.7], [x, 1.6, -0.5]);
-  for (const [x, z] of [[-1.15, 1.45], [1.15, 1.45], [-1.15, -1.45], [1.15, -1.45]] as const) {
-    part(g, GEO.cyl, tire, [0.58, 0.42, 0.58], [x, 0.58, z], [0, 0, Math.PI / 2]);
-    part(g, GEO.cyl, rim, [0.3, 0.44, 0.3], [x, 0.58, z], [0, 0, Math.PI / 2]);
+  // Side steps, mud along the sills and doors, door shut lines and handles, the stripe and the emblem.
+  for (const s of [-1, 1]) {
+    part(g, GEO.box, trim, [0.2, 0.07, 1.45], [s * 1.2, 0.56, 0]);
+    part(g, GEO.box, mud, [0.02, 0.2, 1.5], [s * (X + 0.01), 0.72, 0]);
+    for (const z of [-2.18, 2.2]) part(g, GEO.box, mud, [0.02, 0.18, 0.12], [s * (X + 0.01), 0.72, z]);
+    for (const z of [0.72, -0.55]) part(g, GEO.box, black, [0.02, 0.82, 0.025], [s * (X + 0.005), 1.07, z]);
+    for (const z of [0.42, -0.88]) part(g, GEO.box, trim, [0.04, 0.05, 0.18], [s * (X + 0.02), 1.33, z]);
+    part(g, GEO.box, stripeMat, [0.02, 0.1, 3.4], [s * (X + 0.01), 1.43, -0.5]);
+    part(g, GEO.cyl16, chrome, [0.2, 0.02, 0.2], [s * (X + 0.01), 1.0, 0.1], [0, 0, Math.PI / 2]);
+    part(g, GEO.cyl16, stripeMat, [0.13, 0.02, 0.13], [s * (X + 0.02), 1.0, 0.1], [0, 0, Math.PI / 2]);
+    // Mirrors on short arms at the windscreen pillars.
+    part(g, GEO.box, trim, [0.22, 0.04, 0.04], [s * 1.13, 1.62, 0.78]);
+    part(g, GEO.box, black, [0.08, 0.2, 0.26], [s * 1.26, 1.66, 0.78]);
   }
-  part(g, GEO.cyl, tire, [0.5, 0.35, 0.5], [0, 1.3, -2.4], [Math.PI / 2, 0, 0]);
-  for (const x of [-0.75, 0.75]) part(g, GEO.sphere, mat('#fff6c8'), [0.18, 0.18, 0.08], [x, 1.45, 2.22]);
+  // Front: grille with slats, round headlights in bezels, indicators, bumper, plate, skid plate, bull bar.
+  part(g, GEO.box, black, [1.3, 0.38, 0.04], [0, 1.0, 2.4]);
+  for (let k = -2; k <= 2; k++) part(g, GEO.box, trim, [0.05, 0.34, 0.03], [k * 0.24, 1.0, 2.42]);
+  for (const s of [-1, 1]) {
+    part(g, GEO.cyl16, trim, [0.18, 0.04, 0.18], [s * 0.85, 1.05, 2.4], [Math.PI / 2, 0, 0]);
+    part(g, GEO.cyl16, mat('#f4f1dc'), [0.14, 0.05, 0.14], [s * 0.85, 1.05, 2.42], [Math.PI / 2, 0, 0]);
+    part(g, GEO.box, mat('#e08a1e'), [0.18, 0.08, 0.03], [s * 0.85, 0.84, 2.4]);
+  }
+  part(g, GEO.box, trim, [2.3, 0.3, 0.3], [0, 0.75, 2.4]);
+  part(g, GEO.box, mat('#e9e6dc'), [0.5, 0.14, 0.02], [0, 0.75, 2.56]);
+  part(g, GEO.box, trim, [1.6, 0.06, 0.6], [0, 0.48, 2.3], [0.2, 0, 0]);
+  for (const s of [-1, 1]) part(g, GEO.cyl6, trim, [0.05, 0.85, 0.05], [s * 0.55, 1.07, 2.62]);
+  for (const y of [1.48, 1.12]) part(g, GEO.cyl6, trim, [0.05, 1.2, 0.05], [0, y, 2.62], [0, 0, Math.PI / 2]);
+  // Rear: tail lights, plate, bumper and the spare wheel on the tailgate.
+  for (const s of [-1, 1]) {
+    part(g, GEO.box, mat('#9b1d1d'), [0.16, 0.34, 0.04], [s * 1.0, 1.2, -2.33]);
+    part(g, GEO.box, mat('#e08a1e'), [0.16, 0.1, 0.04], [s * 1.0, 0.96, -2.33]);
+  }
+  part(g, GEO.box, trim, [2.3, 0.28, 0.26], [0, 0.72, -2.36]);
+  part(g, GEO.box, mat('#e9e6dc'), [0.5, 0.14, 0.02], [0, 1.0, -2.33]);
+  part(g, GEO.cyl16, tire, [0.5, 0.3, 0.5], [0, 1.45, -2.45], [Math.PI / 2, 0, 0]);
+  part(g, GEO.cyl16, rim, [0.3, 0.32, 0.3], [0, 1.45, -2.45], [Math.PI / 2, 0, 0]);
+  // Snorkel up the right windscreen pillar.
+  part(g, GEO.cyl6, black, [0.07, 1.25, 0.07], [1.16, 1.88, 0.95]);
+  part(g, GEO.box, black, [0.16, 0.14, 0.24], [1.16, 2.55, 1.0]);
+  // Roof rack with a light bar across the front of it.
+  for (const s of [-1, 1]) {
+    part(g, GEO.cyl6, trim, [0.04, 2.0, 0.04], [s * 0.85, 2.64, -0.95], [Math.PI / 2, 0, 0]);
+    for (const z of [-1.9, 0]) part(g, GEO.box, trim, [0.06, 0.14, 0.06], [s * 0.85, 2.55, z]);
+  }
+  for (const z of [-1.8, -0.95, -0.1]) part(g, GEO.cyl6, trim, [0.04, 1.75, 0.04], [0, 2.64, z], [0, 0, Math.PI / 2]);
+  part(g, GEO.box, black, [1.5, 0.14, 0.16], [0, 2.72, 0.05]);
+  for (let k = 0; k < 4; k++) part(g, GEO.box, mat('#e9eef0'), [0.3, 0.09, 0.02], [-0.54 + k * 0.36, 2.72, 0.14]);
   const smoke = Array.from({ length: 4 }, (_, i) => {
     const m = new THREE.Mesh(GEO.sphere, smokeMat);
     m.visible = false;
@@ -322,9 +514,12 @@ export function updateCar(car: Car, dt: number, t: number) {
   const g = car.group;
   g.position.x = car.from.x + car.push.x * ease;
   g.position.z = car.from.z + car.push.z * ease;
-  // Up in an arc, then resting on its roof (the roof is 2.9 above the wheels' ground line).
-  g.position.y = groundY(g.position.x, g.position.z) + Math.sin(Math.PI * k) * 3 + 2.9 * ease;
-  g.rotation.set(0, car.heading, car.roll * Math.PI * ease);
+  // The roof crumples as it lands on it, and the body comes to rest a little twisted.
+  const squash = 1 - 0.14 * ease;
+  g.scale.set(1 + 0.04 * ease, squash, 1);
+  // Up in an arc, then resting on its roof gear.
+  g.position.y = groundY(g.position.x, g.position.z) + Math.sin(Math.PI * k) * 3 + CAR_ROOF * squash * ease;
+  g.rotation.set(0.07 * car.roll * ease, car.heading, car.roll * Math.PI * ease);
   if (k >= 1 && car.body.color.getHex() !== 0x3a3a3a) car.body.color.lerp(new THREE.Color('#3a3a3a'), Math.min(1, dt * 3));
   for (const m of car.smoke) {
     const s = (t * 0.45 + m.userData.k) % 1;
