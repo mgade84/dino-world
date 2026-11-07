@@ -25,16 +25,34 @@ export const CAGE_SPOTS: Circle[] = [
   { x: 40, z: 30, r: 13 },
   { x: -50, z: -15, r: 13 },
   { x: 85, z: -15, r: 13 },
-  { x: -15, z: 95, r: 13 },
+  { x: -20, z: 78, r: 13 },
+  { x: 62, z: -88, r: 13 },
 ];
 
-/** Main Street: a flattened, clear rectangle (centre, width along x, depth along z) with a road along x. */
-export const TOWN = { x: -75, z: 80, w: 48, d: 30, y: 3 };
-/** Electric fence lines across open ground, as [x1, z1, x2, z2]; kept clear of trees and rocks. */
+/** A flattened, clear rectangle: centre, width along x, depth along z, and the height it is levelled to. */
+export interface Site { x: number; z: number; w: number; d: number; y: number }
+/** Main Street, with a road along x. */
+export const TOWN: Site = { x: -75, z: 80, w: 48, d: 30, y: 3 };
+/** The power station: generators inside a fenced yard with its gate on the east side. */
+export const POWER: Site = { x: -95, z: -25, w: 26, d: 22, y: 2.5 };
+/** The docks' landing, on the north coast. */
+export const DOCKS: Site = { x: 25, z: 94, w: 34, d: 14, y: 1.2 };
+/** North of this the land drops away into the sea. */
+export const SHORE = 103;
+const SITES = [TOWN, POWER, DOCKS];
+/** Electric fence lines, as [x1, z1, x2, z2]; kept clear of trees and rocks. */
 export const FENCE_LINES: [number, number, number, number][] = [
   [-25, -30, 10, -50],
   [35, 55, 60, 95],
+  // The power station's perimeter, with a gate gap in the east side.
+  [-108, -14, -82, -14],
+  [-108, -36, -82, -36],
+  [-108, -36, -108, -14],
+  [-82, -36, -82, -29],
+  [-82, -21, -82, -14],
 ];
+/** How far outside a site's rectangle a point is (negative inside). */
+export const outside = (s: Site, x: number, z: number) => Math.max(Math.abs(x - s.x) - s.w / 2, Math.abs(z - s.z) - s.d / 2);
 /** Distance from a point to a fence line. */
 export function toLine(x: number, z: number, [x1, z1, x2, z2]: [number, number, number, number]) {
   const dx = x2 - x1;
@@ -43,7 +61,7 @@ export function toLine(x: number, z: number, [x1, z1, x2, z2]: [number, number, 
   return Math.hypot(x - (x1 + dx * t), z - (z1 + dz * t));
 }
 /** How far outside the town rectangle a point is (negative inside). */
-export const outsideTown = (x: number, z: number) => Math.max(Math.abs(x - TOWN.x) - TOWN.w / 2, Math.abs(z - TOWN.z) - TOWN.d / 2);
+export const outsideTown = (x: number, z: number) => outside(TOWN, x, z);
 
 /** Flat-topped plateaus with steep rock walls: too steep to walk up, low enough to jump onto. */
 const MESAS = [
@@ -70,8 +88,10 @@ export function groundY(x: number, z: number): number {
     const edge = m.r * (1 + 0.16 * Math.sin(3 * a + m.seed) + 0.09 * Math.sin(5 * a + m.seed * 2));
     h += m.h * smooth(edge + 1.6, edge - 0.6, Math.hypot(x - m.x, z - m.z));
   }
-  // Main Street is levelled, easing back into the hills around it.
-  h += (TOWN.y - h) * smooth(12, 0, outsideTown(x, z));
+  // Main Street, the power station and the docks are levelled, easing back into the hills around them.
+  for (const site of SITES) h += (site.y - h) * smooth(12, 0, outside(site, x, z));
+  // The north coast: a short beach, then the sea floor.
+  h += (-3.5 - h) * smooth(SHORE - 4, SHORE + 8, z);
   return h;
 }
 
@@ -149,7 +169,8 @@ export function buildWorld(): World {
   function blocked(x: number, z: number, clear: number) {
     if (Math.hypot(x - VOLCANO.x, z - VOLCANO.z) < VOLCANO.r + clear) return true;
     if (CAGE_SPOTS.some((c) => Math.hypot(x - c.x, z - c.z) < c.r + clear)) return true;
-    if (outsideTown(x, z) < 4 + clear) return true;
+    if (SITES.some((site) => outside(site, x, z) < 4 + clear)) return true;
+    if (z > SHORE - 4 - clear) return true;
     if (FENCE_LINES.some((l) => toLine(x, z, l) < 3 + clear)) return true;
     let hit = false;
     near(x, z, (c) => {
@@ -213,6 +234,14 @@ export function buildWorld(): World {
   water.position.set(LAKE.x, 0.04, LAKE.z);
   water.receiveShadow = true;
   group.add(water);
+
+  // ---- The sea off the north coast ----
+  const seaGeo = keep(new THREE.PlaneGeometry(GROUND, 160));
+  seaGeo.rotateX(-Math.PI / 2);
+  const sea = new THREE.Mesh(seaGeo, keep(new THREE.MeshStandardMaterial({ color: '#233438', roughness: 0.1, metalness: 0.35 })));
+  sea.position.set(0, 0.02, SHORE + 80 - 6);
+  sea.receiveShadow = true;
+  group.add(sea);
 
   // ---- Volcano, with a glowing crater and puffs of smoke ----
   const volcano = new THREE.Mesh(keep(new THREE.CylinderGeometry(5, VOLCANO.r, 24, 18, 1, true)), lambert({ color: '#3e3430', flatShading: true }));
@@ -292,7 +321,7 @@ export function buildWorld(): World {
       const rr = ring + (rand() - 0.5) * 5;
       const x = Math.max(-HALF - 30, Math.min(HALF + 30, Math.cos(a) * rr * 1.42));
       const z = Math.max(-HALF - 30, Math.min(HALF + 30, Math.sin(a) * rr * 1.42));
-      if (Math.max(Math.abs(x), Math.abs(z)) < HALF + 3) continue;
+      if (Math.max(Math.abs(x), Math.abs(z)) < HALF + 3 || z > SHORE) continue;
       if (rand() < 0.55) tree(x, z, 1.2 + rand() * 0.4);
     }
   }
@@ -351,7 +380,7 @@ export function buildWorld(): World {
       p.x = THREE.MathUtils.clamp(p.x, -HALF, HALF);
       p.z = THREE.MathUtils.clamp(p.z, -HALF, HALF);
     },
-    inWater: (x, z) => inLake(x, z, -1) && groundY(x, z) < 0,
+    inWater: (x, z) => (inLake(x, z, -1) || z > SHORE) && groundY(x, z) < 0,
     openSpot(r, clear) {
       for (let i = 0; i < 400; i++) {
         const x = (r() * 2 - 1) * (HALF - 8);

@@ -40,6 +40,8 @@ export interface Town {
   collide(p: THREE.Vector3, r: number, vel?: THREE.Vector3): Building | null;
   /** A hit from `from` (the dinosaur). Knocks panels loose; true if this brought the building down. */
   hit(b: Building, from: THREE.Vector3): boolean;
+  /** Street lamps on or off (they go out in the blackout). */
+  setLights(on: boolean): void;
   /** Spots on the pavement in front of the buildings, for people to stand. */
   pavement(rand: () => number): THREE.Vector3;
   update(dt: number): void;
@@ -142,6 +144,30 @@ export function createTown(scene: THREE.Scene): Town {
     return b;
   });
 
+  // Street lamps along both pavements.
+  const lampOn = keep(new THREE.MeshStandardMaterial({ color: '#fff1c8', emissive: '#ffd98a', emissiveIntensity: 2.2 }));
+  const lampOff = mat('#3a3833', 0.5);
+  const poleMat = mat('#2d2f31', 0.5, 0.6);
+  const heads: THREE.Mesh[] = [];
+  for (let k = -2; k <= 2; k++) for (const side of [-1, 1]) {
+    const x = TOWN.x + k * 10 + (side > 0 ? 5 : 0);
+    const z = TOWN.z + side * 4.1;
+    const pole = new THREE.Mesh(box, poleMat);
+    pole.scale.set(0.16, 5.5, 0.16);
+    pole.position.set(x, groundY(x, z) + 2.75, z);
+    pole.castShadow = true;
+    scene.add(pole);
+    const arm = new THREE.Mesh(box, poleMat);
+    arm.scale.set(0.1, 0.1, 1.2);
+    arm.position.set(x, groundY(x, z) + 5.45, z - side * 0.55);
+    scene.add(arm);
+    const head = new THREE.Mesh(box, lampOn);
+    head.scale.set(0.45, 0.18, 0.7);
+    head.position.set(x, groundY(x, z) + 5.35, z - side * 1.05);
+    scene.add(head);
+    heads.push(pole, arm, head);
+  }
+
   const tmp = new THREE.Vector3();
 
   function loosen(c: Chunk, b: Building, from: THREE.Vector3, power: number) {
@@ -218,6 +244,9 @@ export function createTown(scene: THREE.Scene): Town {
       puff(tmp.set((b.minX + b.maxX) / 2, b.group.position.y + 1, (b.minZ + b.maxZ) / 2), 10, Math.max(b.maxX - b.minX, b.maxZ - b.minZ));
       return true;
     },
+    setLights(on) {
+      heads.forEach((m, i) => i % 3 === 2 && (m.material = on ? lampOn : lampOff));
+    },
     pavement(rand) {
       const row = rand() < 0.5 ? -1 : 1;
       const x = TOWN.x + (rand() - 0.5) * (TOWN.w - 4);
@@ -275,6 +304,7 @@ export function createTown(scene: THREE.Scene): Town {
         for (const c of b.chunks) scene.remove(c.mesh);
       }
       dust.forEach((d) => scene.remove(d.mesh));
+      heads.forEach((m) => scene.remove(m));
       owned.forEach((o) => o.dispose());
     },
   };

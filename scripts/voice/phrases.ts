@@ -22,8 +22,8 @@ for (const lv of LEVELS) {
   const r = lv.radio;
   add(r.start.da, r.done.da, r.fail?.da, r.escaped?.da, r.spotted?.da);
 }
-// Radio call when the dinosaur is sedated.
-add(dino.da.radioSedated);
+// Generic radio calls: sedated, a generator down, boats leaving and escaping.
+add(dino.da.radioSedated, dino.da.radioGenerator, dino.da.radioBoat, dino.da.radioBoatGone);
 // Radio call when a caged dinosaur breaks free.
 add(...DINOS.map((d) => dino.da.freed(d.name.da)));
 

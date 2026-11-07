@@ -21,6 +21,8 @@ function goalText(g: Goal) {
     case 'scare': return `${S().goalScare} ×${g.n}`;
     case 'free': return `${S().goalFree} ×${g.n}`;
     case 'destroy': return `${S().goalDestroy} ×${g.n}`;
+    case 'generators': return `${S().goalGenerators} ×${g.n}`;
+    case 'sink': return `${S().goalSink} ×${g.n}`;
   }
 }
 
@@ -109,12 +111,13 @@ export const dino: GameDef = {
       const lv = LEVELS[i];
       if (won) completeLevel(i);
       const hasNext = won && levelOpen(i + 1);
+      const last = i === LEVELS.length - 1;
       const el = show(`dn-debrief ${won ? 'won' : 'lost'}`, `
         <div class="dn-panel">
           <p class="dn-kicker">${S().level(i + 1)} · ${L(lv.name)}</p>
-          <h2>${won ? S().complete : S().failed}</h2>
+          <h2>${won ? (last ? S().epilogueTitle : S().complete) : S().failed}</h2>
           ${won ? `<p class="dn-brief-text">${S().timeTaken(clock(time))}</p>` : ''}
-          ${won && !hasNext ? `<p class="dn-brief-text">${S().finale}</p>` : ''}
+          ${won && last ? `<p class="dn-brief-text dn-epilogue">${S().epilogue}</p>` : won && !hasNext ? `<p class="dn-brief-text">${S().finale}</p>` : ''}
           <div class="dn-row">
             <button class="dn-big dn-ghost" data-act="levels">${S().toLevels}</button>
             ${won ? (hasNext ? `<button class="dn-big" data-act="next">${S().next}</button>` : '') : `<button class="dn-big" data-act="retry">${S().retry}</button>`}

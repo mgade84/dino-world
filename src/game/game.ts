@@ -8,7 +8,9 @@ import { CAGE, CAGE_HITS, CAR_COLORS, createCage, createCar, createPerson, dispo
 import { createTown, type Building } from './buildings';
 import { createFences } from './fences';
 import { createSecurity } from './security';
-import { HERO, type Goal, type LevelDef } from './levels';
+import { createStation, type Generator } from './station';
+import { createDocks } from './docks';
+import { HERO, LEVELS, type Goal, type LevelDef } from './levels';
 import { unlockDino, unlockedDinos } from './progress';
 import { clock, M as STRINGS, S } from './strings';
 import { createWeather, STORM } from './weather';
@@ -27,6 +29,8 @@ const REGEN = { after: 5, rate: 6 };
 const CHARGE = 5;
 /** Sedation: seconds until the screen is black, and until the dinosaur wakes at the checkpoint. */
 const SEDATE = { dark: 1.6, wake: 3.8 };
+/** Length of a level's opening camera shot, in seconds. */
+const INTRO = 5.5;
 /** Fog and clear colour: the storm's horizon. */
 const SKY = STORM.horizon;
 /** Base light levels; lightning adds to them. */
@@ -101,6 +105,14 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   // Story levels say whether there are fences; Rampage has them live.
   const fenceMode = level ? level.fences : 'live';
   const fences = fenceMode ? createFences(scene, fenceMode === 'live') : null;
+  const station = createStation(scene);
+  const docks = createDocks(scene, rng(11));
+  const powered = level?.power !== 'off';
+  if (!powered) {
+    // After the blackout: the generators are wrecks and the lights are out.
+    station.blackout(true);
+    town.setLights(false);
+  }
   const placeRand = rng(Date.now() & 0xffff);
   const extra: { dispose(): void }[] = [];
   const keep = <T extends { dispose(): void }>(x: T) => (extra.push(x), x);
@@ -119,6 +131,11 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     ${story ? '' : `<button class="dn-btn dn-change" aria-label="${S().change}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 14-5.3V4h2v6h-6V8h2.8A6 6 0 1 0 18 12h2a8 8 0 0 1-16 0z"/></svg></button>`}
     <button class="dn-act dn-jump" aria-label="${S().jump}"><span>${S().jump}</span></button>
     <button class="dn-act dn-roar" aria-label="${S().roar}"><span>${S().roar}</span></button>
+    <div class="dn-intro" hidden>
+      <div class="dn-bar dn-bar-top"></div><div class="dn-bar dn-bar-bottom"></div>
+      ${level ? `<div class="dn-title"><small>${S().level(LEVELS.indexOf(level) + 1)} · ${L(level.place)}</small><h2>${L(level.name)}</h2></div>` : ''}
+      <p class="dn-skip">${S().skip}</p>
+    </div>
     <div class="dn-energy" hidden><small>${S().energy}</small><i><b></b></i></div>
     <div class="dn-hurt"></div>
     <div class="dn-sedate"><h2>${S().sedated}</h2><p>${S().sedatedSub}</p></div>
@@ -146,6 +163,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   const energyBar = energyEl.querySelector<HTMLElement>('b')!;
   const hurt = hud.querySelector<HTMLElement>('.dn-hurt')!;
   const sedateEl = hud.querySelector<HTMLElement>('.dn-sedate')!;
+  const introEl = hud.querySelector<HTMLElement>('.dn-intro')!;
   const picker = hud.querySelector<HTMLElement>('.dn-pick')!;
   const stick = hud.querySelector<HTMLElement>('.dn-stick')!;
   const knob = stick.querySelector('i')!;
@@ -187,17 +205,17 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   }
 
   /** Levels that begin after the breakout: the paddock's front bars are already bent open, and the dinosaur stands just outside. */
-  function startOutside() {
+  function startOutside(at?: [number, number, number]) {
     for (let k = 0; k < CAGE_HITS; k++) cage.bump(3);
     free = true;
     const out = cage.exit!;
-    // Far enough out that the chase camera starts clear of the bars.
-    const x = CAGE.x + out.x * (CAGE.half + 16);
-    const z = CAGE.z + out.z * (CAGE.half + 16);
-    heading = camYaw = Math.atan2(out.x, out.z);
+    // Just outside the bent bars, far enough out that the chase camera starts clear of them; or a level's own start.
+    const x = at ? at[0] : CAGE.x + out.x * (CAGE.half + 16);
+    const z = at ? at[1] : CAGE.z + out.z * (CAGE.half + 16);
+    heading = camYaw = at ? at[2] : Math.atan2(out.x, out.z);
     player!.root.position.set(x, groundY(x, z), z);
     player!.root.rotation.y = heading;
-    camPos.set(x - out.x * CHASE.back, groundY(x, z) + CHASE.up, z - out.z * CHASE.back);
+    camPos.set(x - Math.sin(heading) * CHASE.back, groundY(x, z) + CHASE.up, z - Math.cos(heading) * CHASE.back);
   }
 
   /** An open spot at least `far` from the cage. */
@@ -227,7 +245,19 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
 
   // ---- Other dinosaurs in cages of their own ----
   let captives: Captive[] = [];
+  const emptyCages: Cage[] = [];
   function spawnCaptives() {
+    if (!powered) {
+      // The blackout opened every paddock: the cages stand empty, bars bent.
+      for (const spot of CAGE_SPOTS) {
+        const empty = createCage(spot.x, spot.z);
+        for (let k = 0; k < CAGE_HITS; k++) empty.bump(2);
+        scene.add(empty.group);
+        emptyCages.push(empty);
+      }
+      captives = [];
+      return;
+    }
     captives = CAGE_SPOTS.map((spot, i) => {
       const cage = createCage(spot.x, spot.z);
       scene.add(cage.group);
@@ -243,11 +273,12 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   spawnCaptives();
 
   // ---- Objectives ----
-  const count = { escape: 0, smash: 0, scare: 0, free: 0, destroy: 0 };
+  const count = { escape: 0, smash: 0, scare: 0, free: 0, destroy: 0, generators: 0, sink: 0 };
   const goals: Goal[] = level?.goals ?? [];
   const goalNeed = (g: Goal) => (g.kind === 'escape' ? 1 : g.n);
   const GOAL_LABEL: Record<Goal['kind'], () => string> = {
     escape: () => S().goalEscape, smash: () => S().goalSmash, scare: () => S().goalScare, free: () => S().goalFree, destroy: () => S().goalDestroy,
+    generators: () => S().goalGenerators, sink: () => S().goalSink,
   };
   function renderGoals() {
     if (story) {
@@ -259,7 +290,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         })
         .join('');
     } else {
-      goalList.innerHTML = `<li>${S().wrecked} <b>${count.smash}</b></li><li>${S().scaredLabel} <b>${count.scare}</b></li><li>${S().freedLabel} <b>${count.free}</b></li><li>${S().destroyedLabel} <b>${count.destroy}</b></li>`;
+      goalList.innerHTML = `<li>${S().wrecked} <b>${count.smash}</b></li><li>${S().scaredLabel} <b>${count.scare}</b></li><li>${S().freedLabel} <b>${count.free}</b></li><li>${S().destroyedLabel} <b>${count.destroy}</b></li><li>${S().sunkLabel} <b>${count.sink}</b></li>`;
     }
   }
   const goalsMet = () => story && goals.every((g) => count[g.kind] >= goalNeed(g));
@@ -314,11 +345,11 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     toastTimer = window.setTimeout(() => (toast.hidden = true), 3500);
   }
 
-  function freeCaptive(c: Captive) {
+  function freeCaptive(c: Captive, quiet = false) {
     c.state = 'leaving';
     c.rig.roaring = 1;
     sfx.roar(c.spec.roar);
-    timers.push(window.setTimeout(() => alive && radio({ en: M_freed('en', c.spec), da: M_freed('da', c.spec) }), 600));
+    if (!quiet) timers.push(window.setTimeout(() => alive && radio({ en: M_freed('en', c.spec), da: M_freed('da', c.spec) }), 600));
     if (unlockDino(c.spec.id)) timers.push(window.setTimeout(() => alive && notice(S().unlocked(L(c.spec.name))), 2200));
     progress('free');
   }
@@ -376,6 +407,16 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       scene.add(person.group);
       people.push(person);
     });
+    // The docks have a crowd waiting for the boats in the last level.
+    if (level?.boats) {
+      for (let k = 0; k < 8; k++) {
+        const person = createPerson(placeRand);
+        person.group.position.copy(docks.landing(placeRand));
+        person.heading = Math.PI * (0.8 + placeRand() * 0.4);
+        scene.add(person.group);
+        people.push(person);
+      }
+    }
     // Main Street has its own crowd, on the pavements, wherever buildings are a goal (and in Rampage).
     if (!level || goals.some((g) => g.kind === 'destroy')) {
       for (let k = 0; k < 8; k++) {
@@ -513,7 +554,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   };
   document.addEventListener('pointerlockchange', onLockChange);
 
+  hud.addEventListener('pointerdown', () => endIntro(), { capture: true });
   canvas.addEventListener('pointerdown', (e) => {
+    if (intro >= 0) return endIntro();
     if (picking || paused) return;
     if (e.pointerType === 'mouse' && canLock) {
       if (mouseLook()) {
@@ -555,6 +598,10 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     ArrowLeft: [-1, 0], KeyA: [-1, 0], ArrowRight: [1, 0], KeyD: [1, 0],
   };
   const onKey = (e: KeyboardEvent) => {
+    if (intro >= 0 && e.type === 'keydown') {
+      endIntro();
+      return;
+    }
     if (e.code === 'Escape' || e.code === 'KeyP') {
       if (e.type === 'keydown' && !picking && !finished) setPaused(!paused);
       return;
@@ -584,12 +631,15 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
 
   /** Moves along the ground, sliding round trees and stopping at cliffs that are too steep. */
   const from = new THREE.Vector3();
+  /** The generator the last moveOnGround() pushed against, if any. */
+  let touchedGen: Generator | null = null;
   /** Returns the building it pushed against, if any. */
   function moveOnGround(p: THREE.Vector3, v: THREE.Vector3, dt: number, radius: number, airborne: boolean): Building | null {
     from.copy(p);
     p.addScaledVector(v, dt);
     world.collide(p, radius);
     const building = town.collide(p, radius, v);
+    touchedGen = station.collide(p, radius, v);
     const run = Math.hypot(p.x - from.x, p.z - from.z);
     const rise = groundY(p.x, p.z) - from.y;
     const tooSteep = airborne ? rise > 0.25 : run > 1e-4 && rise / run > CLIMB && rise > 0.05;
@@ -808,6 +858,47 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     energyEl.classList.toggle('low', energy < 30);
   }
 
+  /** The last generator is dead: fences die, lights go out, and every paddock on the island opens. */
+  function blackout() {
+    station.blackout();
+    fences?.setLive(false);
+    town.setLights(false);
+    for (const c of captives) {
+      if (c.state !== 'caged') continue;
+      for (let k = 0; k < CAGE_HITS; k++) c.cage.bump(2, -1);
+      freeCaptive(c, true);
+    }
+  }
+
+  const docksEvents = {
+    depart: () => radio({ en: STRINGS.en.radioBoat, da: STRINGS.da.radioBoat }),
+    escape: () => {
+      // Too many away to meet the goal: the mission's lost.
+      const need = goals.find((g) => g.kind === 'sink');
+      if (need && need.kind === 'sink' && count.sink + docks.afloat < need.n) finish(false);
+      else radio({ en: STRINGS.en.radioBoatGone, da: STRINGS.da.radioBoatGone });
+    },
+  };
+
+  // ---- Opening shot ----
+  /** Seconds into the opening shot, or -1 once it's over (or for Rampage, which has none). */
+  let intro = level ? 0 : -1;
+  const introFrom = new THREE.Vector3();
+  const introTo = new THREE.Vector3();
+  const introLook = new THREE.Vector3();
+  if (level) {
+    introFrom.set(...level.intro.from);
+    introTo.set(...level.intro.to);
+    introLook.set(...level.intro.look);
+  }
+  function endIntro() {
+    if (intro < 0) return;
+    intro = -1;
+    introEl.hidden = true;
+    hud.classList.remove('in-intro');
+    if (level?.boats) docks.schedule(level.boats);
+  }
+
   /** Touching bars last frame, and the direction into them. */
   let pressing = false;
   const pressDir = new THREE.Vector3();
@@ -815,7 +906,11 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   function update(dt: number) {
     if (paused) return;
     t += dt;
-    if (!finished) elapsed += dt;
+    if (intro >= 0) {
+      intro += dt;
+      if (intro >= INTRO) endIntro();
+    }
+    if (!finished && intro < 0) elapsed += dt;
     if (level?.timeLimit && !finished && timerNum) {
       const left = Math.max(0, level.timeLimit - elapsed);
       timerNum.textContent = clock(Math.ceil(left));
@@ -832,7 +927,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         side += KEYS[k][0];
         ahead -= KEYS[k][1];
       }
-      if (picking || finished || sedated > 0) side = ahead = 0;
+      if (picking || finished || sedated > 0 || intro >= 0) side = ahead = 0;
       const amount = Math.min(1, Math.hypot(side, ahead));
       fwd.set(Math.sin(camYaw), 0, Math.cos(camYaw));
       right.set(-Math.cos(camYaw), 0, Math.sin(camYaw));
@@ -888,6 +983,31 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         }
       }
       zapCool = Math.max(0, zapCool - dt);
+      // Generators: a charge damages one; the last one dying blacks out the island.
+      if (touchedGen && !high && free && charge > CHARGE) {
+        vel.multiplyScalar(-0.25);
+        sfx.clang();
+        sfx.zap();
+        shake = Math.max(shake, 0.5);
+        if (station.hit(touchedGen, p)) {
+          sfx.collapse();
+          shake = 1;
+          progress('generators');
+          if (station.running === 0) blackout();
+          else radio({ en: STRINGS.en.radioGenerator, da: STRINGS.da.radioGenerator });
+        }
+      }
+      // Boats: ram one, moored or under way, and over it goes.
+      if (!high && free) {
+        const boat = docks.ram(p, player.radius, vel, charge);
+        if (boat) {
+          sfx.crash();
+          sfx.splat();
+          sfx.scream();
+          shake = Math.max(shake, 0.8);
+          progress('sink');
+        }
+      }
       // Cage bars only block; biting them (the roar button, when close) bends them.
       // Pressing against bars: no bounce, and friction so it doesn't slide off along them.
       let atBars = false;
@@ -1077,9 +1197,16 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       camPos.lerp(dir, 1 - Math.exp(-dt * 6));
     }
     shake = Math.max(0, shake - dt);
-    camera.position.copy(camPos);
-    if (shake > 0) camera.position.add(new THREE.Vector3((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake, 0));
-    camera.lookAt(camAt);
+    if (intro >= 0) {
+      // The opening shot: a slow glide over the level's location.
+      const k = THREE.MathUtils.smoothstep(intro / INTRO, 0, 1);
+      camera.position.lerpVectors(introFrom, introTo, k);
+      camera.lookAt(introLook);
+    } else {
+      camera.position.copy(camPos);
+      if (shake > 0) camera.position.add(new THREE.Vector3((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake, 0));
+      camera.lookAt(camAt);
+    }
     weather.update(dt, camera);
     hemi.intensity = LIGHT.hemi + weather.flash * LIGHT.flashHemi;
     sun.intensity = LIGHT.sun * (1 - weather.flash * 0.5);
@@ -1089,9 +1216,11 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
 
     town.update(dt);
     fences?.update(dt, t);
+    station.update(dt, t);
+    docks.update(dt, t, docksEvents);
     if (player) {
       const p = player.root.position;
-      security?.update(dt, t, { pos: p, radius: player.radius, speed: Math.hypot(vel.x, vel.z), free, ignore: sedated > 0 || finished });
+      security?.update(dt, t, { pos: p, radius: player.radius, speed: Math.hypot(vel.x, vel.z), free, ignore: sedated > 0 || finished || intro >= 0 });
       updateEnergy(dt);
     }
     cage.update(dt, t);
@@ -1225,6 +1354,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   resize();
   setPlayer(heroSpec);
   if (!level || level.start === 'free') startOutside();
+  else if (Array.isArray(level.start)) startOutside(level.start);
+  introEl.hidden = intro < 0;
+  hud.classList.toggle('in-intro', intro >= 0);
   checkpoint.copy(player!.root.position);
   spawnTargets();
   renderGoals();
@@ -1248,6 +1380,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     ro.disconnect();
     weather.dispose();
     town.dispose();
+    station.dispose();
+    docks.dispose();
     fences?.dispose();
     security?.dispose();
     world.dispose();
