@@ -45,6 +45,9 @@ export interface Security {
   roar(at: THREE.Vector3, range: number): void;
   /** After the dinosaur wakes at a checkpoint: rangers near it fall back to their posts. */
   regroup(at: THREE.Vector3): void;
+  /** More rangers arrive at posts around the island. */
+  reinforce(n: number): void;
+  readonly count: number;
   dispose(): void;
 }
 
@@ -64,13 +67,14 @@ export function createSecurity(
   const tuftMat = new THREE.MeshStandardMaterial({ color: '#ff3a1a', emissive: '#a01800', emissiveIntensity: 0.6 });
   owned.push(dartMat, tuftMat);
 
-  const rangers: Ranger[] = Array.from({ length: count }, () => {
+  const recruit = (): Ranger => {
     const p = createPerson(rand, 'ranger');
     const home = spot();
     p.group.position.copy(home);
     scene.add(p.group);
     return { p, home, target: home.clone(), mode: 'patrol', t: rand() * 3, cool: 0 };
-  });
+  };
+  const rangers: Ranger[] = Array.from({ length: count }, recruit);
   const darts: Dart[] = [];
   let spotted = false;
   const to = new THREE.Vector3();
@@ -194,6 +198,12 @@ export function createSecurity(
           r.t = 0;
         }
       }
+    },
+    get count() {
+      return rangers.length;
+    },
+    reinforce(n) {
+      for (let k = 0; k < n; k++) rangers.push(recruit());
     },
     regroup(at) {
       for (const r of rangers) {

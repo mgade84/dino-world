@@ -18,7 +18,8 @@ const RAIN = { drops: 2600, box: 46, height: 34, speed: 30, len: 0.9, wind: 0.22
  * A storm: a gradient sky dome that follows the camera, streaks of rain falling through a box around the
  * camera (moved entirely on the GPU), lightning flashes with thunder after them, and the hiss of rain.
  */
-export function createWeather(scene: THREE.Scene): Weather {
+export function createWeather(scene: THREE.Scene, density = 1): Weather {
+  const DROPS = Math.round(RAIN.drops * density);
   const disposables: { dispose(): void }[] = [];
   const keep = <T extends { dispose(): void }>(x: T) => (disposables.push(x), x);
 
@@ -55,9 +56,9 @@ export function createWeather(scene: THREE.Scene): Weather {
   scene.add(sky);
 
   // ---- Rain: each drop is a short line; the shader wraps it round a box that follows the camera ----
-  const pos = new Float32Array(RAIN.drops * 2 * 3);
-  const end = new Float32Array(RAIN.drops * 2);
-  for (let i = 0; i < RAIN.drops; i++) {
+  const pos = new Float32Array(DROPS * 2 * 3);
+  const end = new Float32Array(DROPS * 2);
+  for (let i = 0; i < DROPS; i++) {
     const x = (Math.random() - 0.5) * RAIN.box;
     const y = Math.random() * RAIN.height;
     const z = (Math.random() - 0.5) * RAIN.box;

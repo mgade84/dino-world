@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import type { GameContext } from '../types';
-import { sfx } from '../engine/audio';
+import { ambience, noiseLoop, sfx, toneLoop } from '../engine/audio';
 import { L, type Txt } from '../i18n';
 import { animate, buildDino, disposeDinoAssets, DINOS, type DinoSpec, type Rig } from './dinos';
-import { buildWorld, groundY, HALF, rng, CAGE_SPOTS } from './world';
+import { buildWorld, groundY, HALF, rng, CAGE_SPOTS, POWER, SHORE } from './world';
 import { CAGE, CAGE_HITS, CAR_COLORS, createCage, createCar, createPerson, disposePark, knockDown, posePerson, scare, updateCar, wreckCar, type Cage, type Car, type Person } from './park';
 import { createTown, type Building } from './buildings';
 import { createFences } from './fences';
@@ -11,8 +11,9 @@ import { createSecurity } from './security';
 import { createStation, type Generator } from './station';
 import { createDocks } from './docks';
 import { disposeMerged } from './merge';
+import { getQuality, getShowFps } from '../engine/storage';
 import { HERO, LEVELS, type Goal, type LevelDef } from './levels';
-import { unlockDino, unlockedDinos } from './progress';
+import { rampageBest, recordRampage, unlockDino, unlockedDinos } from './progress';
 import { clock, M as STRINGS, S } from './strings';
 import { createWeather, STORM } from './weather';
 import './dino.css';
@@ -22,6 +23,10 @@ const RAMPAGE_TARGETS = 10;
 const NPCS = 6;
 /** Rampage: rangers on the island. */
 const RAMPAGE_RANGERS = 4;
+/** Rampage scoring: points per kind of mayhem, the combo window and cap, and how often reinforcements come. */
+const POINTS: Record<string, number> = { smash: 100, scare: 25, knock: 50, free: 200, destroy: 500, generators: 400, sink: 300, fence: 50 };
+const COMBO = { window: 4, max: 5 };
+const HEAT = { every: 2500, max: 6 };
 /** Energy lost to a dart, and to a live fence. Energy comes back after a few seconds without a hit. */
 const DART_HIT = 14;
 const ZAP_HIT = 20;
@@ -32,6 +37,8 @@ const CHARGE = 5;
 const SEDATE = { dark: 1.6, wake: 3.8 };
 /** Length of a level's opening camera shot, in seconds. */
 const INTRO = 5.5;
+/** Auto quality: resolution steps between these, by this much, when frames run slower or faster than these (ms). */
+const ADAPT = { min: 0.7, step: 0.15, slow: 24, fast: 14, window: 1000 };
 /** Fog and clear colour: the storm's horizon. */
 const SKY = STORM.horizon;
 /** Base light levels; lightning adds to them. */
@@ -75,7 +82,10 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   const level = opts.level;
   const story = !!level;
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+  const quality = getQuality();
+  const maxRatio = Math.min(window.devicePixelRatio || 1, 1.5);
+  let ratio = quality === 'low' ? Math.min(1, maxRatio) : maxRatio;
+  renderer.setPixelRatio(ratio);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.3;
@@ -93,7 +103,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   scene.add(hemi);
   const sun = new THREE.DirectionalLight('#c9d2d8', LIGHT.sun);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(1024, 1024);
+  sun.shadow.mapSize.setScalar(quality === 'low' ? 512 : 1024);
   Object.assign(sun.shadow.camera, { left: -45, right: 45, top: 45, bottom: -45, near: 1, far: 150 });
   sun.shadow.bias = -0.0005;
   sun.shadow.normalBias = 0.03;
@@ -101,7 +111,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
 
   const world = buildWorld();
   scene.add(world.group);
-  const weather = createWeather(scene);
+  const weather = createWeather(scene, quality === 'low' ? 0.5 : 1);
   const town = createTown(scene);
   // Story levels say whether there are fences; Rampage has them live.
   const fenceMode = level ? level.fences : 'live';
@@ -109,6 +119,13 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   const station = createStation(scene);
   const docks = createDocks(scene, rng(11));
   const powered = level?.power !== 'off';
+  // Soundscape: the music, the station's hum and the surf, mixed by where the dinosaur is.
+  const music = ambience();
+  const hum = toneLoop('sine', 50);
+  const humNoise = noiseLoop('lowpass', 140, 2);
+  const surf = noiseLoop('lowpass', 450, 0.7);
+  /** 0..1, how hunted the dinosaur is right now; rises on sightings and hits, then fades. */
+  let tension = 0;
   if (!powered) {
     // After the blackout: the generators are wrecks and the lights are out.
     station.blackout(true);
@@ -137,6 +154,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       ${level ? `<div class="dn-title"><small>${S().level(LEVELS.indexOf(level) + 1)} · ${L(level.place)}</small><h2>${L(level.name)}</h2></div>` : ''}
       <p class="dn-skip">${S().skip}</p>
     </div>
+    <div class="dn-fps" ${getShowFps() ? '' : 'hidden'}></div>
+    ${story ? '' : `<div class="dn-score"><small>${S().score}</small><b>0</b><i></i></div>`}
     <div class="dn-energy" hidden><small>${S().energy}</small><i><b></b></i></div>
     <div class="dn-hurt"></div>
     <div class="dn-sedate"><h2>${S().sedated}</h2><p>${S().sedatedSub}</p></div>
@@ -165,6 +184,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   const hurt = hud.querySelector<HTMLElement>('.dn-hurt')!;
   const sedateEl = hud.querySelector<HTMLElement>('.dn-sedate')!;
   const introEl = hud.querySelector<HTMLElement>('.dn-intro')!;
+  const fpsEl = hud.querySelector<HTMLElement>('.dn-fps')!;
+  const scoreEl = hud.querySelector<HTMLElement>('.dn-score');
   const picker = hud.querySelector<HTMLElement>('.dn-pick')!;
   const stick = hud.querySelector<HTMLElement>('.dn-stick')!;
   const knob = stick.querySelector('i')!;
@@ -309,7 +330,41 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     const time = elapsed;
     timers.push(window.setTimeout(() => alive && opts.onEnd({ won, time }), won ? 4200 : 3200));
   }
+  // ---- Rampage score ----
+  let score = 0;
+  let combo = 0;
+  let lastScore = -99;
+  let reinforced = 0;
+  const startBest = story ? 0 : rampageBest();
+  let bestShown = false;
+  function award(kind: string) {
+    if (story || !POINTS[kind]) return;
+    // Mayhem in quick succession builds a combo multiplier.
+    combo = t - lastScore < COMBO.window ? Math.min(COMBO.max, combo + 1) : 1;
+    lastScore = t;
+    score += POINTS[kind] * combo;
+    if (scoreEl) {
+      scoreEl.querySelector('b')!.textContent = score.toLocaleString();
+      scoreEl.querySelector('i')!.textContent = combo > 1 ? `×${combo}` : '';
+      scoreEl.classList.remove('pop');
+      void scoreEl.offsetWidth;
+      scoreEl.classList.add('pop');
+    }
+    if (recordRampage(score) && startBest > 0 && !bestShown) {
+      bestShown = true;
+      notice(S().newBest);
+    }
+    // The more damage, the more rangers.
+    const wanted = Math.min(HEAT.max, Math.floor(score / HEAT.every));
+    if (wanted > reinforced && security) {
+      security.reinforce(wanted - reinforced);
+      reinforced = wanted;
+      radio({ en: STRINGS.en.radioReinforce, da: STRINGS.da.radioReinforce });
+    }
+  }
+
   function progress(kind: keyof typeof count, n = 1) {
+    award(kind);
     count[kind] += n;
     // Each step towards the goals is a checkpoint to wake up at if sedated.
     if (player && free && grounded) checkpoint.copy(player.root.position);
@@ -493,7 +548,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       s.remove(r.root);
       return url;
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    renderer.setPixelRatio(ratio);
     return urls;
   }
   /** Rampage: the dinosaurs freed in the story so far. */
@@ -813,8 +868,13 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
             sfx.dartHit();
             damage(DART_HIT);
           },
-          onSpot: () => level?.radio.spotted && radio(level.radio.spotted),
+          onSpot: () => {
+            sfx.siren();
+            tension = 1;
+            if (level?.radio.spotted) radio(level.radio.spotted);
+          },
           onKnock: () => {
+            award('knock');
             sfx.thud();
             shake = Math.max(shake, 0.3);
           },
@@ -826,6 +886,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     if (sedated > 0 || finished) return;
     energy = Math.max(0, energy - n);
     lastHit = t;
+    tension = Math.max(tension, 0.8);
     hurt.classList.remove('on');
     void hurt.offsetWidth; // restart the flash
     hurt.classList.add('on');
@@ -858,8 +919,11 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     energyEl.classList.toggle('low', energy < 30);
   }
 
+  const canBlackOut = !story || goals.some((g) => g.kind === 'generators');
+
   /** The last generator is dead: fences die, lights go out, and every paddock on the island opens. */
   function blackout() {
+    sfx.powerDown();
     station.blackout();
     fences?.setLive(false);
     town.setLights(false);
@@ -978,13 +1042,15 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
           damage(ZAP_HIT);
           shake = Math.max(shake, 0.7);
         } else if (f === 'break') {
+          award('fence');
           sfx.crash();
           shake = Math.max(shake, 0.4);
         }
       }
       zapCool = Math.max(0, zapCool - dt);
       // Generators: a charge damages one; the last one dying blacks out the island.
-      if (touchedGen && !high && free && charge > CHARGE) {
+      // Only Blackout (and Rampage) lets the generators be wrecked: elsewhere the story needs the power on.
+      if (touchedGen && !high && free && charge > CHARGE && canBlackOut) {
         vel.multiplyScalar(-0.25);
         sfx.clang();
         sfx.zap();
@@ -1022,6 +1088,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
           sfx.roar(spec.roar * 1.1);
           shake = 0.8;
           if (level?.radio.escaped) radio(level.radio.escaped);
+          sfx.siren();
+          tension = 1;
           progress('escape');
         }
       }
@@ -1143,7 +1211,10 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         // Run into at speed: knocked flat (they get up and flee).
         if (free && pp.state !== 'down' && Math.hypot(q.x - p.x, q.z - p.z) < player.radius + 0.9 && speed > 3 && p.y - q.y < 3) {
           frighten(pp);
-          if (knockDown(pp, p)) sfx.thud();
+          if (knockDown(pp, p)) {
+            sfx.thud();
+            award('knock');
+          }
         }
         if (pp.state === 'down') {
           pp.vel.multiplyScalar(Math.exp(-dt * 4));
@@ -1222,6 +1293,18 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       const p = player.root.position;
       security?.update(dt, t, { pos: p, radius: player.radius, speed: Math.hypot(vel.x, vel.z), free, ignore: sedated > 0 || finished || intro >= 0 });
       updateEnergy(dt);
+      if (scoreEl && combo > 1 && t - lastScore > COMBO.window) {
+        combo = 0;
+        scoreEl.querySelector('i')!.textContent = '';
+      }
+      // Mix the soundscape.
+      tension = Math.max(0, tension - dt / 12);
+      music.set(sedated > 0 ? 0 : 0.25 + tension * 0.75);
+      const toStation = Math.hypot(p.x - POWER.x, p.z - POWER.z);
+      const near = station.running > 0 ? THREE.MathUtils.clamp(1 - toStation / 45, 0, 1) : 0;
+      hum.set(near * 0.08);
+      humNoise.set(near * 0.12);
+      surf.set(THREE.MathUtils.clamp(1 - (SHORE - p.z) / 35, 0, 1) * (0.06 + Math.sin(t * 0.45) * 0.03));
     }
     cage.update(dt, t);
     for (const c of captives) {
@@ -1324,13 +1407,49 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   let raf = 0;
   let last = performance.now();
   let alive = true;
+  // Frame timing, for the frame-rate readout and for adapting the resolution in Auto quality.
+  let frames = 0;
+  let frameMs = 0;
+  let fastWindows = 0;
+  function adapt(avg: number) {
+    if (quality !== 'auto') return;
+    if (avg > ADAPT.slow) {
+      fastWindows = 0;
+      if (ratio > ADAPT.min + 0.01) {
+        ratio = Math.max(ADAPT.min, ratio - ADAPT.step);
+        renderer.setPixelRatio(ratio);
+        resize();
+      } else if (sun.castShadow) sun.castShadow = false; // last resort: no shadows
+    } else if (avg < ADAPT.fast && ratio < maxRatio - 0.01) {
+      // Only step back up after a couple of fast windows in a row, so it doesn't flicker between sizes.
+      if (++fastWindows >= 2) {
+        fastWindows = 0;
+        ratio = Math.min(maxRatio, ratio + ADAPT.step * 0.66);
+        renderer.setPixelRatio(ratio);
+        resize();
+      }
+    } else fastWindows = 0;
+  }
   function frame(now: number) {
     raf = requestAnimationFrame(frame);
+    const raw = now - last;
     // A frame's timestamp can be a little earlier than the start time; a negative step would run every countdown backwards.
-    const dt = THREE.MathUtils.clamp((now - last) / 1000, 0, 0.05);
+    const dt = THREE.MathUtils.clamp(raw / 1000, 0, 0.05);
     last = now;
     update(dt);
     renderer.render(scene, camera);
+    // Measured over about a second of real time (frames longer than a second are pauses, not slowness).
+    if (raw > 0 && raw < 1000) {
+      frames++;
+      frameMs += raw;
+      if (frameMs >= ADAPT.window) {
+        const avg = frameMs / frames;
+        if (!fpsEl.hidden) fpsEl.textContent = `${Math.round(1000 / avg)} fps · ${ratio.toFixed(2)}×${sun.castShadow ? '' : ' · no shadows'} · ${renderer.info.render.calls} calls`;
+        if (intro < 0 && !paused) adapt(avg);
+        frames = 0;
+        frameMs = 0;
+      }
+    }
   }
   function resize() {
     const w = root.clientWidth || 1;
@@ -1379,6 +1498,10 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     clearTimeout(toastTimer);
     ro.disconnect();
     weather.dispose();
+    music.stop();
+    hum.stop();
+    humNoise.stop();
+    surf.stop();
     town.dispose();
     station.dispose();
     docks.dispose();

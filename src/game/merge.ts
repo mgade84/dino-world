@@ -20,7 +20,7 @@ const painted = new Map<string, THREE.Material>();
 
 function plainKey(m: THREE.Material): string | null {
   const p = m as Plain;
-  if (!(p.isMeshStandardMaterial || p.isMeshLambertMaterial) || p.userData.dynamic) return null;
+  if (!((m as THREE.MeshStandardMaterial).isMeshStandardMaterial || (m as THREE.MeshLambertMaterial).isMeshLambertMaterial) || p.userData.dynamic) return null;
   if (p.map || p.bumpMap || p.transparent || p.side !== THREE.FrontSide || p.vertexColors) return null;
   if (p.emissive && p.emissive.getHex() !== 0 && p.emissiveIntensity > 0) return null;
   if ((p as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
@@ -89,7 +89,9 @@ export function bake(root: THREE.Object3D, moving: Iterable<THREE.Object3D> = []
         batch.geos.forEach((g) => g.dispose());
         continue;
       }
-      const merged = mergeGeometries(batch.geos.map((g) => normalise(g, batch.painted)), false);
+      // Already vertex-coloured parts (merged earlier) keep their colours too.
+      const coloured = batch.painted || batch.geos.every((g) => !!g.attributes.color);
+      const merged = mergeGeometries(batch.geos.map((g) => normalise(g, coloured)), false);
       batch.geos.forEach((g) => g.dispose());
       if (!merged) continue;
       owned?.push(merged);

@@ -1,4 +1,5 @@
 import { isMuted, setMuted, sfx } from './engine/audio';
+import { getQuality, getShowFps, setQuality, setShowFps, type Quality } from './engine/storage';
 import { getLang, L, LANGS, setLang, UI } from './i18n';
 import { LEVELS } from './game/levels';
 import { levelsDone, resetProgress } from './game/progress';
@@ -29,6 +30,16 @@ export function mountSettings(app: HTMLElement, onBack: () => void, onLangChange
       <section class="setting">
         <div class="setting-text"><b>${t.soundLabel}</b></div>
         ${toggle('sound', !isMuted())}
+      </section>
+      <section class="setting">
+        <div class="setting-text"><b>${t.graphics}</b><small>${t.graphicsHint}</small></div>
+        <div class="lang-toggle" role="radiogroup" aria-label="${t.graphics}">
+          ${(['auto', 'high', 'low'] as Quality[]).map((q) => `<button class="${q === getQuality() ? 'on' : ''}" data-quality="${q}" role="radio" aria-checked="${q === getQuality()}">${t[q === 'auto' ? 'qAuto' : q === 'high' ? 'qHigh' : 'qLow']}</button>`).join('')}
+        </div>
+      </section>
+      <section class="setting">
+        <div class="setting-text"><b>${t.fps}</b></div>
+        ${toggle('fps', getShowFps())}
       </section>
       <section class="setting">
         <div class="setting-text"><b>${t.progress}</b><small class="progress-hint">${t.progressHint(levelsDone(), LEVELS.length)}</small></div>
@@ -70,10 +81,21 @@ export function mountSettings(app: HTMLElement, onBack: () => void, onLangChange
       }
       return;
     }
+    const qBtn = target.closest<HTMLElement>('[data-quality]');
+    if (qBtn) {
+      setQuality(qBtn.dataset.quality as Quality);
+      el.querySelectorAll<HTMLElement>('[data-quality]').forEach((b) => {
+        b.classList.toggle('on', b === qBtn);
+        b.setAttribute('aria-checked', String(b === qBtn));
+      });
+      sfx.tap();
+      return;
+    }
     const sw = target.closest<HTMLElement>('[data-toggle]');
     if (sw) {
       const on = !sw.classList.contains('on');
-      setMuted(!on);
+      if (sw.dataset.toggle === 'fps') setShowFps(on);
+      else setMuted(!on);
       sw.classList.toggle('on', on);
       sw.setAttribute('aria-checked', String(on));
       sw.querySelector('span')!.textContent = on ? t.on : t.off;

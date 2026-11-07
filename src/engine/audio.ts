@@ -282,6 +282,18 @@ export const sfx = {
     voice('sine', 48, 0.3, 1.6, 0, 30);
     for (let i = 0; i < 7; i++) noise(0.18, 0.25, 'bandpass', 800 + Math.random() * 1400, 0.1 + i * 0.22);
   },
+  /** A park alarm: a siren wailing up and down twice, a little distant. */
+  siren() {
+    for (let k = 0; k < 4; k++) voice('sawtooth', k % 2 ? 880 : 480, 0.05, 0.62, k * 0.6, k % 2 ? 480 : 880, 0.05);
+    for (let k = 0; k < 4; k++) voice('triangle', k % 2 ? 1320 : 720, 0.04, 0.62, k * 0.6, k % 2 ? 720 : 1320, 0.05);
+  },
+  /** The power failing: machinery winding down, then a heavy clunk. */
+  powerDown() {
+    voice('sawtooth', 420, 0.12, 2.2, 0, 40, 0.02);
+    voice('sine', 210, 0.12, 2.4, 0, 25, 0.02);
+    noise(0.4, 0.4, 'lowpass', 180, 2.1);
+    voice('sine', 60, 0.3, 0.5, 2.1, 30);
+  },
   /** Distant thunder: a crack, then a long low rumble. */
   thunder() {
     noise(0.25, 0.35, 'lowpass', 1400);
@@ -389,3 +401,91 @@ export const sfx = {
     voice('sine', 280, 0.08, long ? 0.8 : 0.32, 0, 640);
   },
 };
+
+export interface ToneLoop {
+  /** Fades to a volume (0 = silent). */
+  set(vol: number): void;
+  stop(): void;
+}
+
+/** A continuous tone, e.g. a generator's hum. Starts silent. */
+export function toneLoop(type: OscillatorType, freq: number): ToneLoop {
+  const a = ac;
+  if (!a || !master || a.state !== 'running') return { set() {}, stop() {} };
+  const o = a.createOscillator();
+  o.type = type;
+  o.frequency.value = freq;
+  const g = a.createGain();
+  g.gain.value = 0;
+  o.connect(g);
+  g.connect(master);
+  o.start();
+  let stopped = false;
+  return {
+    set(vol) {
+      if (!stopped) g.gain.setTargetAtTime(vol, a.currentTime, 0.1);
+    },
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      g.gain.setTargetAtTime(0, a.currentTime, 0.1);
+      o.stop(a.currentTime + 0.6);
+    },
+  };
+}
+
+export interface Ambience {
+  /** 0 calm … 1 tense: louder, brighter and more restless. */
+  set(intensity: number): void;
+  stop(): void;
+}
+
+/**
+ * The score: a low, dark drone of detuned saws under a slowly breathing filter, a fifth above for
+ * unease. Intensity opens the filter and lifts the volume when the hunt is on.
+ */
+export function ambience(): Ambience {
+  const a = ac;
+  if (!a || !master || a.state !== 'running') return { set() {}, stop() {} };
+  const out = a.createGain();
+  out.gain.value = 0;
+  const filter = a.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 220;
+  filter.Q.value = 4;
+  filter.connect(out);
+  out.connect(master);
+  const oscs = [55, 55.35, 82.4, 41.2].map((f, i) => {
+    const o = a.createOscillator();
+    o.type = i === 2 ? 'triangle' : 'sawtooth';
+    o.frequency.value = f;
+    const g = a.createGain();
+    g.gain.value = i === 2 ? 0.25 : i === 3 ? 0.6 : 0.5;
+    o.connect(g);
+    g.connect(filter);
+    o.start();
+    return o;
+  });
+  // A slow breath on the filter.
+  const lfo = a.createOscillator();
+  lfo.frequency.value = 0.07;
+  const depth = a.createGain();
+  depth.gain.value = 90;
+  lfo.connect(depth);
+  depth.connect(filter.frequency);
+  lfo.start();
+  let stopped = false;
+  return {
+    set(k) {
+      if (stopped) return;
+      out.gain.setTargetAtTime(0.05 + k * 0.07, a.currentTime, 0.8);
+      filter.frequency.setTargetAtTime(200 + k * 500, a.currentTime, 0.8);
+    },
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      out.gain.setTargetAtTime(0, a.currentTime, 0.3);
+      for (const o of [...oscs, lfo]) o.stop(a.currentTime + 1.5);
+    },
+  };
+}

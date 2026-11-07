@@ -1,7 +1,7 @@
 import type { GameDef } from './types';
 import { sfx } from './engine/audio';
 import { L, UI } from './i18n';
-import { rampageOpen } from './game/progress';
+import { rampageBest, rampageOpen } from './game/progress';
 import { S } from './game/strings';
 import './splash.css';
 
@@ -71,7 +71,7 @@ export function mountSplash(
 
     <nav class="sp-menu">
       <button class="sp-item" data-go="story"><b>${s.story}</b><small>${s.storySub}</small></button>
-      <button class="sp-item" data-go="rampage" ${canRampage ? '' : 'disabled'}><b>${s.rampage}</b><small>${canRampage ? s.rampageSub : s.rampageLocked}</small></button>
+      <button class="sp-item" data-go="rampage" ${canRampage ? '' : 'disabled'}><b>${s.rampage}</b><small>${canRampage ? (rampageBest() ? s.best(rampageBest().toLocaleString()) : s.rampageSub) : s.rampageLocked}</small></button>
     </nav>
 
     <button class="round-btn settings-btn sp-gear" aria-label="${t.settings}">

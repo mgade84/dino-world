@@ -784,3 +784,59 @@
   z-index: 4;
   bottom: calc(11vh + 12px);
 }
+
+.dn-fps {
+  position: absolute;
+  top: calc(var(--sat) + 74px);
+  right: calc(var(--sar) + 12px);
+  padding: 4px 8px;
+  background: rgba(8, 12, 14, 0.75);
+  font: 600 12px ui-monospace, Menlo, monospace;
+  color: var(--ok);
+  pointer-events: none;
+}
+
+/* Rampage score, top centre, with the combo multiplier beside it. */
+.dn-score {
+  position: absolute;
+  top: calc(var(--sat) + 14px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 20px 8px;
+  background: rgba(8, 12, 14, 0.7);
+  pointer-events: none;
+}
+
+.dn-score small {
+  font: 700 12px var(--font-display);
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.dn-score b {
+  font: 800 34px / 1 var(--font-display);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.dn-score i {
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  margin: -14px 0 0 8px;
+  font: 800 italic 26px var(--font-display);
+  color: var(--accent);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+.dn-score.pop b {
+  animation: dn-score 0.3s ease-out;
+}
+
+@keyframes dn-score {
+  40% { color: var(--accent); }
+}
