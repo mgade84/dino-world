@@ -19,6 +19,22 @@ interface Leg {
   bend: number;
   offset: number;
   amp: number;
+  /** Hip height at rest. */
+  baseY: number;
+  /** Thigh, shin and foot bone as (dy, dz) offsets, for working out how much a bent leg shortens. */
+  segs: [number, number][];
+  /** Hip-to-foot height with the leg straight. */
+  rest: number;
+}
+
+/** How far below the hip the end of the leg is, with the hip, knee and ankle bent by these angles. */
+function legDrop(l: Leg, hip: number, knee: number, ankle: number) {
+  const angles = [hip, hip + knee, hip + knee + ankle];
+  let y = 0;
+  l.segs.forEach(([dy, dz], i) => {
+    y += dy * Math.cos(angles[i]) - dz * Math.sin(angles[i]);
+  });
+  return -y;
 }
 
 /** The moving parts of a dinosaur model, animated by animate(). */
@@ -45,6 +61,10 @@ export interface Rig {
   wingMode: number;
   spread: number;
   lastStep: number;
+  /** 0..1: knees bent and body lowered, feet staying planted (before a jump, and on landing). */
+  crouch: number;
+  /** 0..1: legs tucked up under the body, for time in the air. */
+  air: number;
 }
 
 type V3 = [number, number, number];
@@ -176,7 +196,7 @@ const SIDE = new THREE.Vector3(1, 0, 0);
  * The section's width is always along x, so the sweep can turn up (necks) or down (legs) freely.
  * u runs round the section from the underside; v is distance along the sweep times `vScale`.
  */
-function sweep(rings: Ring[], sides = 16, vScale = 0.25) {
+function sweep(rings: Ring[], sides = 16, vScale = 0.25, uOffset = 0) {
   const S = sides;
   const n = rings.length;
   const posArr = new Float32Array(n * (S + 1) * 3);
@@ -202,7 +222,7 @@ function sweep(rings: Ring[], sides = 16, vScale = 0.25) {
       p.copy(r.p).addScaledVector(SIDE, r.w * sx).addScaledVector(U, hh * sy);
       const j = i * (S + 1) + k;
       posArr.set([p.x, p.y, p.z], j * 3);
-      uvArr.set([k / S, along * vScale], j * 2);
+      uvArr.set([k / S + uOffset, along * vScale], j * 2);
     }
   }
   const idx: number[] = [];
@@ -263,6 +283,27 @@ function ringsFrom(stations: Station[], density = 6): Ring[] {
   return out;
 }
 
+/**
+ * Rounds off the open ends of a sweep with two shrinking rings each, so tubes are closed (no seeing inside
+ * them from behind) and joints overlap like ball joints.
+ */
+function capped(rings: Ring[], start = true, end = true): Ring[] {
+  const cap = (r: Ring, toward: Ring): Ring[] => {
+    const dir = r.p.clone().sub(toward.p).normalize();
+    const size = Math.max(r.w, r.h);
+    return [0.72, 0.38, 0.02].map((k, i) => ({
+      p: r.p.clone().addScaledVector(dir, size * [0.35, 0.6, 0.68][i]),
+      w: r.w * k,
+      h: r.h * k,
+      drop: r.drop,
+    }));
+  };
+  const out = [...rings];
+  if (start && rings.length > 1) out.unshift(...cap(rings[0], rings[1]).reverse());
+  if (end && rings.length > 1) out.push(...cap(rings[rings.length - 1], rings[rings.length - 2]));
+  return out;
+}
+
 /** A tapered limb segment from `a` to `b` (in the yz plane), with a muscle bulge near the top. */
 function limb(parent: THREE.Object3D, mat: THREE.Material, a: V3, b: V3, w0: number, w1: number, bulge = 1.12) {
   const A = new THREE.Vector3(...a);
@@ -271,10 +312,8 @@ function limb(parent: THREE.Object3D, mat: THREE.Material, a: V3, b: V3, w0: num
     const w = (w0 + (w1 - w0) * t) * (t > 0.05 && t < 0.6 ? bulge : 1);
     return { p: A.clone().lerp(B, t), w, h: w * 1.05, drop: 0 };
   });
-  // Round the ends off slightly so joints read as joints.
-  rings[0].w *= 0.85;
-  rings[0].h *= 0.85;
-  const mesh = new THREE.Mesh(sweep(rings, 12, 0.5), mat);
+  // uOffset 0.5 puts the texture's darker back on the back of the limb and its pale belly on the front.
+  const mesh = new THREE.Mesh(sweep(capped(rings), 12, 0.5, 0.5), mat);
   mesh.castShadow = true;
   parent.add(mesh);
   return mesh;
@@ -441,7 +480,7 @@ function jaw(b: Body, skin: THREE.Material, hinge: V3, path: [dz: number, dy: nu
   const head = b.fwd[b.fwd.length - 1];
   const j = attach(b, new THREE.Group(), hinge, head);
   const rings: Ring[] = path.map(([dz, dy, w, h]) => ({ p: new THREE.Vector3(0, dy, dz), w, h, drop: 0.1 }));
-  const m = new THREE.Mesh(sweep(rings, 14, 0.4), skin);
+  const m = new THREE.Mesh(sweep(capped(rings, true, false), 14, 0.4), skin);
   m.castShadow = true;
   j.add(m);
   const end = path[path.length - 2];
@@ -472,22 +511,41 @@ function buildLeg(root: THREE.Object3D, skin: THREE.Material, d: LegDef): Leg {
   const [p0, p1, p2, p3] = d.pts;
   const rel = (a: V3, b: V3): V3 => [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
   const pivot = group(root, [d.x, d.y, d.z]);
-  limb(pivot, skin, p0, p1, d.w[0], d.w[1], 1.18);
+  limb(pivot, skin, p0, p1, d.w[0], d.w[1], 1.1);
   const knee = group(pivot, p1);
   limb(knee, skin, [0, 0, 0], rel(p1, p2), d.w[1], d.w[2]);
   const ankle = group(knee, rel(p1, p2));
   limb(ankle, skin, [0, 0, 0], rel(p2, p3), d.w[2], d.w[3], 1.0);
   const foot = group(ankle, rel(p2, p3));
-  // Toes fan out forward from the foot and reach down to the ground.
+  // A fleshy pad under the end of the leg, from the heel to the toe joints, sitting on the ground.
   const above = d.y + p3[1];
+  const w3 = d.w[3];
+  const padH = Math.max(w3 * 0.45, Math.min(above, w3 * 0.7) * 0.6);
+  const padY = -above + padH;
+  const pad = new THREE.Mesh(
+    sweep(capped([
+      { p: new THREE.Vector3(0, padY + padH * 0.4, -w3 * 0.6), w: w3 * 0.85, h: padH * 1.15, drop: 0 },
+      { p: new THREE.Vector3(0, padY + padH * 0.15, 0), w: w3 * 1.15, h: padH * 1.1, drop: 0 },
+      { p: new THREE.Vector3(0, padY - padH * 0.05, w3 * 0.85), w: w3 * 1.3, h: padH * 0.9, drop: 0 },
+    ]), 12, 0.5),
+    skin,
+  );
+  pad.castShadow = true;
+  foot.add(pad);
+  // Toes grow out of the front of the pad, fanned out and resting on the ground, each ending in a claw.
+  const toeR = w3 * 0.4;
   for (let k = 0; k < d.toes; k++) {
-    const spread = d.toes === 1 ? 0 : (k / (d.toes - 1) - 0.5) * 0.9;
-    const toe = group(foot, [Math.sin(spread) * d.w[3] * 0.5, 0, 0], [0, spread, 0]);
-    const tip: V3 = [0, -above + d.w[3] * 0.28, d.toeLen];
-    limb(toe, skin, [0, 0, 0], tip, d.w[3] * 0.55, d.w[3] * 0.28, 1);
-    if (d.claws !== false) part(toe, GEO.cone, ivory(), [d.w[3] * 0.18, d.toeLen * 0.35, d.w[3] * 0.18], [0, tip[1] + 0.02, tip[2] + d.toeLen * 0.12], [Math.PI / 2 + 0.25, 0, 0]);
+    const spread = d.toes === 1 ? 0 : (k / (d.toes - 1) - 0.5) * (d.toes > 3 ? 1.1 : 0.85);
+    const toe = group(foot, [Math.sin(spread) * w3 * 0.6, 0, w3 * 0.55], [0, spread, 0]);
+    const len = d.toeLen * (k === 0 || k === d.toes - 1 ? 0.82 : 1);
+    const tip: V3 = [0, -above + toeR * 0.75, len];
+    limb(toe, skin, [0, -above + toeR * 1.1, -w3 * 0.1], tip, toeR, toeR * 0.6, 1.08);
+    if (d.claws !== false) part(toe, GEO.cone, ivory(), [toeR * 0.45, len * 0.42, toeR * 0.45], [0, tip[1] - toeR * 0.25, tip[2] + len * 0.14], [Math.PI / 2 + 0.35, 0, 0]);
   }
-  return { pivot, knee, ankle, foot, bend: d.bend, offset: d.offset, amp: d.amp };
+  const segs = [rel(p0, p1), rel(p1, p2), rel(p2, p3)].map(([, y, z]) => [y, z] as [number, number]);
+  const leg: Leg = { pivot, knee, ankle, foot, bend: d.bend, offset: d.offset, amp: d.amp, baseY: d.y, segs, rest: 0 };
+  leg.rest = legDrop(leg, 0, 0, 0);
+  return leg;
 }
 
 /** Two legs (bipeds) or four (quadrupeds) with the usual diagonal gait. */
@@ -496,7 +554,7 @@ const PAIR = [0, Math.PI];
 function rig(root: THREE.Group, body: THREE.Group, b: Body, o: Partial<Rig>): Rig {
   return {
     root, body, head: b.fwd[b.fwd.length - 1], legs: [], tail: b.tail, neck: b.fwd.slice(1, -1), jaw: null,
-    radius: 2, stepRate: 6, bob: 0.1, phase: 0, roaring: 0, biting: 0, lastStep: 0, wings: [], wingMode: 0, spread: 0,
+    radius: 2, stepRate: 6, bob: 0.1, phase: 0, roaring: 0, biting: 0, lastStep: 0, wings: [], wingMode: 0, spread: 0, crouch: 0, air: 0,
     ...o,
   };
 }
@@ -516,23 +574,26 @@ function scutes(b: Body, mat: THREE.Material, z0: number, z1: number, n: number,
 function trex(c: Colors): Rig {
   const skin = skinMaterial(c);
   const root = new THREE.Group();
-  const hip = 2.5;
+  const hip = 2.95;
   const body = group(root, [0, hip, 0]);
   const b = skinnedBody(
     [
       [-5.3, -0.3, 0.02, 0.02], [-4.6, -0.18, 0.12, 0.14], [-3.6, 0, 0.22, 0.27], [-2.6, 0.15, 0.34, 0.42],
-      [-1.7, 0.3, 0.5, 0.6], [-0.9, 0.42, 0.68, 0.8, 0.1], [-0.2, 0.45, 0.8, 0.94, 0.15], [0.5, 0.4, 0.84, 1.0, 0.25],
-      [1.2, 0.48, 0.76, 0.9, 0.2], [1.8, 0.75, 0.58, 0.7, 0.1], [2.25, 1.08, 0.48, 0.56], [2.6, 1.36, 0.5, 0.58, -0.35],
-      [3.0, 1.42, 0.47, 0.52, -0.45], [3.4, 1.36, 0.39, 0.44, -0.45], [3.8, 1.25, 0.3, 0.35, -0.4], [4.15, 1.14, 0.22, 0.27, -0.35],
-      [4.38, 1.08, 0.12, 0.16, -0.3], [4.47, 1.06, 0.03, 0.05],
+      [-1.7, 0.3, 0.52, 0.62], [-0.9, 0.42, 0.74, 0.82, 0.1], [-0.2, 0.45, 0.86, 0.9, 0.12], [0.5, 0.4, 0.86, 0.92, 0.18],
+      [1.2, 0.48, 0.76, 0.9, 0.2], [1.8, 0.75, 0.6, 0.72, 0.1], [2.25, 1.1, 0.52, 0.62], [2.6, 1.4, 0.58, 0.68, -0.35],
+      [3.0, 1.46, 0.55, 0.62, -0.45], [3.45, 1.4, 0.46, 0.54, -0.45], [3.9, 1.28, 0.36, 0.44, -0.4], [4.3, 1.16, 0.26, 0.33, -0.35],
+      [4.55, 1.08, 0.14, 0.19, -0.3], [4.66, 1.06, 0.03, 0.05],
     ],
     [-1.0, -1.9, -2.9, -4.0], -0.2, [1.0, 1.75, 2.2, 2.55], skin,
   );
   body.add(b.mesh);
-  const jawPivot = jaw(b, skin, [0, 1.0, 2.62], [[-0.1, 0, 0.36, 0.2], [0.05, -0.06, 0.42, 0.21], [0.6, -0.1, 0.36, 0.18], [1.2, -0.08, 0.26, 0.13], [1.62, -0.03, 0.14, 0.07], [1.75, -0.02, 0.03, 0.03]], 8, 0.11);
-  teeth(b.fwd[3], [0.36, 1.42 - 0.52 * 0.55 - 1.36 + 0.05, 2.85 - 2.55], [0.16, 1.14 - 0.27 * 0.65 - 1.36 + 0.03, 4.15 - 2.55], 9, 0.16, false);
-  eyes(b, skin, 0.38, 1.68, 2.88, 0.075, b.fwd[3]);
-  for (const side of [-1, 1]) part(attach(b, new THREE.Group(), [side * 0.12, 1.24, 4.32], b.fwd[3]), GEO.sphere, eyeMat(), [0.035, 0.03, 0.05]);
+  const skull = b.fwd[3];
+  const sh = b.home.get(skull)!;
+  const jawPivot = jaw(b, skin, [0, 0.98, 2.62], [[-0.1, 0, 0.42, 0.25], [0.05, -0.08, 0.5, 0.27], [0.65, -0.13, 0.44, 0.23], [1.3, -0.1, 0.31, 0.16], [1.8, -0.04, 0.17, 0.09], [1.95, -0.03, 0.03, 0.03]], 9, 0.13);
+  // Upper teeth hang from the skull's lower edge (body-space points, made relative to the skull bone).
+  teeth(skull, [0.44, 1.12 - sh.y, 2.95 - sh.z], [0.18, 0.94 - sh.y, 4.35 - sh.z], 10, 0.18, false);
+  eyes(b, skin, 0.42, 1.76, 2.95, 0.08, skull);
+  for (const side of [-1, 1]) part(attach(b, new THREE.Group(), [side * 0.13, 1.28, 4.5], skull), GEO.sphere, eyeMat(), [0.04, 0.035, 0.06]);
   scutes(b, plainMat(c.accent, 0.7), -3.8, 1.6, 14, 0.14);
   // Little two-fingered arms under the chest.
   for (const side of [-1, 1]) {
@@ -546,8 +607,8 @@ function trex(c: Colors): Rig {
   const r = rig(root, body, b, { jaw: jawPivot, radius: 1.8, stepRate: 6.2, bob: 0.12 });
   r.legs = [-1, 1].map((side, i) =>
     buildLeg(root, skin, {
-      x: side * 0.6, y: hip, z: -0.15, pts: [[0, 0.1, 0], [0, -1.0, 0.55], [0, -1.95, 0.05], [0, -2.36, 0.22]],
-      w: [0.6, 0.32, 0.17, 0.15], toes: 3, toeLen: 0.6, bend: 1, offset: PAIR[i], amp: 0.42,
+      x: side * 0.52, y: hip, z: -0.15, pts: [[0, 0.2, -0.05], [0, -1.0, 0.55], [0, -2.15, -0.05], [0, -2.82, 0.2]],
+      w: [0.6, 0.34, 0.2, 0.17], toes: 3, toeLen: 0.66, bend: 1, offset: PAIR[i], amp: 0.4,
     }),
   );
   return r;
@@ -803,22 +864,36 @@ export function buildDino(spec: DinoSpec, colors = spec.colors): Rig {
  */
 export function animate(r: Rig, dt: number, move: number, t: number): boolean {
   r.phase += dt * r.stepRate * move;
+  let drop = 0;
   for (const l of r.legs) {
     const ph = r.phase + l.offset;
     const swing = Math.sin(ph) * l.amp * move;
     // The foot travels forward while the swing angle is falling: lift it then.
     const lift = Math.max(0, -Math.cos(ph)) * move;
-    l.pivot.rotation.x = swing;
-    l.knee.rotation.x = l.bend * lift * 0.75;
-    l.ankle.rotation.x = -l.bend * lift * 0.9;
-    l.foot.rotation.x = -(swing + l.bend * lift * 0.75 - l.bend * lift * 0.9) + lift * 0.35;
+    // Crouch: thigh forward, knee bent, ankle flexed. In the air: the whole leg tucked up.
+    const ch = -l.bend * r.crouch * 0.5;
+    const ck = l.bend * r.crouch * 1.05;
+    const ca = -l.bend * r.crouch * 0.65;
+    const hip = swing + ch - l.bend * r.air * 0.55;
+    const knee = l.bend * lift * 0.75 + ck + l.bend * r.air * 1.15;
+    const ankle = -l.bend * lift * 0.9 + ca - l.bend * r.air * 0.55;
+    l.pivot.rotation.x = hip;
+    l.knee.rotation.x = knee;
+    l.ankle.rotation.x = ankle;
+    // Keep the foot level on the ground; let the toes hang in the air.
+    l.foot.rotation.x = -(hip + knee + ankle) + lift * 0.35 + r.air * 0.7;
+    // A crouching leg is shorter, so the hip comes down to keep the foot planted.
+    const d = r.crouch > 0 ? l.rest - legDrop(l, ch, ck, ca) : 0;
+    l.pivot.position.y = l.baseY - d;
+    drop = Math.max(drop, d);
   }
   // Heavy animals: the body dips on each footfall and rolls a little from side to side.
-  r.body.position.y = r.legs[0].pivot.position.y - Math.abs(Math.sin(r.phase)) * r.bob * move + Math.sin(t * 1.6) * 0.02;
+  r.body.position.y = r.legs[0].baseY - drop - Math.abs(Math.sin(r.phase)) * r.bob * move + Math.sin(t * 1.6) * 0.02;
   r.body.rotation.z = Math.sin(r.phase) * 0.03 * move;
   r.tail.forEach((seg, i) => {
     seg.rotation.y = Math.sin(t * 1.1 - i * 0.6) * 0.06 + Math.sin(r.phase - i * 0.55) * 0.08 * move;
-    seg.rotation.x = Math.sin(t * 0.8 - i * 0.4) * 0.015;
+    // In the air the tail lifts to balance; in a crouch it drops.
+    seg.rotation.x = Math.sin(t * 0.8 - i * 0.4) * 0.015 - r.air * 0.07 + r.crouch * 0.05;
   });
   r.neck.forEach((seg, i) => {
     seg.rotation.y = Math.sin(t * 0.7 + i * 0.5) * 0.04;

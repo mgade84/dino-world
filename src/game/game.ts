@@ -28,6 +28,8 @@ const STICK = 100;
 const GRAVITY = 34;
 /** Jump speed: peaks a little over 4 units, enough to get onto the plateaus. */
 const JUMP = 17;
+/** Seconds spent crouching to load the legs before springing off them. */
+const WINDUP = 0.17;
 /** Steepest ground a dinosaur can walk up (rise over run); cliffs need a jump. */
 const CLIMB = 0.9;
 
@@ -575,12 +577,13 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     flying = false;
   }
 
+  /** Jumps start with a crouch; update() launches when the legs are loaded. */
+  let windup = -1;
+  /** How hard the last landing was, 0..1; the legs absorb it and it fades. */
+  let landing = 0;
   function jump() {
-    if (!player || picking || !grounded) return;
-    vy = JUMP;
-    grounded = false;
-    player.root.position.y += 0.01;
-    sfx.thud();
+    if (!player || picking || paused || !grounded || windup >= 0) return;
+    windup = 0;
   }
 
   let shake = 0;
@@ -778,6 +781,18 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         roarLabel.textContent = biteShown ? S().bite : S().roar;
         roarBtn.setAttribute('aria-label', biteShown ? S().bite : S().roar);
       }
+      // Jump: crouch to load the legs, then spring off them.
+      if (windup >= 0) {
+        windup += dt;
+        if (windup >= WINDUP) {
+          windup = -1;
+          vy = JUMP;
+          grounded = false;
+          p.y += 0.01;
+          sfx.thud();
+          shake = Math.max(shake, 0.25);
+        }
+      }
       // Gravity, jumping, and walking down hills without bouncing.
       const g = groundY(p.x, p.z);
       if (spec.fly && flying) {
@@ -798,12 +813,21 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         p.y += vy * dt;
         if (p.y <= g) {
           if (vy < -14) sfx.thud();
+          // The legs take the impact: a deeper crouch the harder it lands.
+          landing = THREE.MathUtils.clamp(-vy / 24, 0.25, 1);
+          if (vy < -10) shake = Math.max(shake, landing * 0.5);
           p.y = g;
           vy = 0;
         }
       }
       grounded = !(spec.fly && flying) && p.y <= g + 0.001;
       player.wingMode = spec.fly && flying ? 1 : grounded ? 0 : 0.5;
+      // Leg pose: crouch while winding up or absorbing a landing; tuck the legs up after take-off,
+      // and reach down for the ground again on the way down.
+      player.crouch = windup >= 0 ? THREE.MathUtils.smoothstep(windup / WINDUP, 0, 1) * 0.75 : landing * 0.85;
+      landing = Math.max(0, landing - dt * 2.6);
+      const tuck = grounded ? 0 : spec.fly && flying ? 1 : vy > -5 ? 0.9 : 0.3;
+      player.air += (tuck - player.air) * (1 - Math.exp(-dt * (grounded ? 20 : 8)));
       const speed = Math.hypot(vel.x, vel.z);
       if (player.biting > 0) heading = turnToward(heading, biteHeading, dt * 16);
       else if (steer !== null) heading = turnToward(heading, steer, dt * 9);
