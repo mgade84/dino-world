@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { DinoSpec } from './species';
+import { bake } from './merge';
 
 export { DINOS, type DinoSpec } from './species';
 
@@ -885,6 +886,11 @@ const BUILD: Record<DinoSpec['id'], (c: Colors) => Rig> = {
 export function buildDino(spec: DinoSpec, colors = spec.colors): Rig {
   const r = BUILD[spec.id](colors);
   r.root.updateMatrixWorld(true);
+  // Merge every static part (teeth, claws, eyes, horns, scutes, toes…) into its joint: a few draw calls per animal.
+  const moving: THREE.Object3D[] = [r.body, r.head, ...r.tail, ...r.neck, ...r.wings.map((w) => w.pivot)];
+  if (r.jaw) moving.push(r.jaw);
+  for (const l of r.legs) moving.push(l.pivot, l.knee, l.ankle, l.foot);
+  bake(r.root, moving, owned);
   return r;
 }
 

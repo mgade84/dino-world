@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { groundY, POWER } from './world';
+import { bake } from './merge';
 
 /**
  * The power station: three backup generators in a fenced yard, with transformers and floodlights.
@@ -87,6 +88,7 @@ export function createStation(scene: THREE.Scene): Station {
     put(g, cyl, steel, [0.35, 3.2, 0.35], [2.4, 4.6, -0.9]);
     for (let k = 0; k < 5; k++) put(g, box, k % 2 ? stripeK : stripeY, [0.6, 0.35, 4.05], [3.2, 0.7 + k * 0.35, 0]);
     const lamp = put(g, box, lampOn, [0.15, 0.3, 0.3], [3.55, 2.9, 1.2]);
+    lamp.userData.keep = true;
     return { group: g, minX: x - 3.8, maxX: x + 3.8, minZ: z - 2.3, maxZ: z + 2.3, hp: HP, dead: false, cool: 0, shake: 0, lamp };
   });
 
@@ -107,9 +109,15 @@ export function createStation(scene: THREE.Scene): Station {
     const pole = new THREE.Group();
     pole.position.set(x, groundY(x, z), z);
     put(pole, cyl, steel, [0.15, 9, 0.15], [0, 4.5, 0]);
-    floods.push(put(pole, box, flood, [1.1, 0.5, 0.6], [0, 9.1, 0], [0.3, Math.atan2(-dx, -dz), 0]));
+    const f = put(pole, box, flood, [1.1, 0.5, 0.6], [0, 9.1, 0], [0.3, Math.atan2(-dx, -dz), 0]);
+    f.userData.keep = true;
+    floods.push(f);
     root.add(pole);
   }
+
+  // One mesh per material for the static yard; generators keep their own group (they shake and slump).
+  bake(root, generators.map((g) => g.group), owned);
+  for (const g of generators) bake(g.group, [], owned);
 
   // Sparks and smoke.
   const sparks: { mesh: THREE.Mesh; vel: THREE.Vector3; life: number }[] = [];

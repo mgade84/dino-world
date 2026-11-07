@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { createPerson, posePerson, type Person } from './park';
 import { DOCKS, groundY, HALF, SHORE } from './world';
+import { bake } from './merge';
 
 /**
  * The north-coast docks: a pier with evacuation launches moored either side, a boat shed and crates on
@@ -104,6 +105,7 @@ export function createDocks(scene: THREE.Scene, rand: () => number): Docks {
     put(g, box, std('#2b2928', 0.6), [HULL.beam * 0.85, 0.15, 3.8], [0, 3.15, -1]);
     for (const s of [-1, 1]) put(g, box, rail, [0.06, 0.6, HULL.len - 1], [s * (HULL.beam / 2 - 0.1), 1.6, 0.2]);
     root.add(g);
+    bake(g, [], owned);
     // Passengers crowded on the aft deck.
     const people = Array.from({ length: 3 }, (_, k) => {
       const pp = createPerson(rand);
@@ -115,6 +117,8 @@ export function createDocks(scene: THREE.Scene, rand: () => number): Docks {
     });
     return { group: g, people, state: 'moored', dir, heading: 0, t: 0 };
   });
+
+  bake(root, boats.map((x) => x.group), owned);
 
   // Swimmers from capsized boats, making for the shore (then gone).
   const swimmers: { p: Person; vel: THREE.Vector3; t: number }[] = [];

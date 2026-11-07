@@ -10,6 +10,7 @@ import { createFences } from './fences';
 import { createSecurity } from './security';
 import { createStation, type Generator } from './station';
 import { createDocks } from './docks';
+import { disposeMerged } from './merge';
 import { HERO, LEVELS, type Goal, type LevelDef } from './levels';
 import { unlockDino, unlockedDinos } from './progress';
 import { clock, M as STRINGS, S } from './strings';
@@ -1387,6 +1388,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     extra.forEach((x) => x.dispose());
     disposeDinoAssets();
     disposePark();
+    disposeMerged();
     renderer.dispose();
     renderer.forceContextLoss();
     canvas.remove();

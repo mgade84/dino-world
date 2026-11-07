@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { FENCE_LINES, groundY } from './world';
+import { bake } from './merge';
 
 /**
  * Perimeter fences: tall concrete posts strung with cables, a warning lamp on every post. While the
@@ -67,6 +68,7 @@ export function createFences(scene: THREE.Scene, live: boolean): Fences {
       const lamp = new THREE.Mesh(box, live ? lampOn : lampOff);
       lamp.scale.set(0.3, 0.25, 0.3);
       lamp.position.y = HEIGHT + 0.15;
+      lamp.userData.keep = true; // its material switches with the power
       g.add(lamp);
       lamps.push(lamp);
       for (let c = 0; c < CABLES; c++) {
@@ -82,6 +84,7 @@ export function createFences(scene: THREE.Scene, live: boolean): Fences {
         sign.position.set(0.12, 2.2, seg / 2);
         g.add(sign);
       }
+      bake(g, [], owned);
       scene.add(g);
       sections.push({ a: new THREE.Vector2(ax, az), b: new THREE.Vector2(bx, bz), group: g, down: false, fall: 0, fallDir: 1 });
     }

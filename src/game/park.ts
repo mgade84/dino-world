@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { groundY } from './world';
+import { bake } from './merge';
 
 /** The player's cage: centred on the start, big enough for a Brachiosaurus, too tall to jump out of. All cages share its size. */
 export const CAGE = { x: 0, z: 6, half: 7, height: 9 };
@@ -111,6 +112,34 @@ export function createCage(cx = CAGE.x, cz = CAGE.z): Cage {
     for (let k = 0; k < 4; k++) part(root, GEO.box, k % 2 ? stripeB : stripeA, [0.12, 0.35, 0.9], [x, groundY(x, z) + 3 + k * 0.35, z]);
   }
 
+  // Bars move (they bend when bitten); everything else in the cage is one mesh per material.
+  const barGroups = sides.flatMap((s) => s.bars.flatMap((b) => [b.lower, b.upper]));
+  bake(root, barGroups, owned);
+  // Until a bar is touched, draw all of them as a couple of merged meshes and hide the separate ones.
+  root.updateMatrixWorld(true);
+  const holders = sides.flatMap((s) => s.bars.map((b) => b.lower.parent!));
+  const intact = new THREE.Group();
+  const inv = root.matrixWorld.clone().invert();
+  for (const g of barGroups) for (const c of g.children) {
+    const mesh = c as THREE.Mesh;
+    if (!mesh.isMesh) continue;
+    const copy = new THREE.Mesh(mesh.geometry, mesh.material);
+    copy.applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, mesh.matrixWorld));
+    copy.castShadow = true;
+    intact.add(copy);
+  }
+  bake(intact, [], owned);
+  root.add(intact);
+  holders.forEach((h) => (h.visible = false));
+  let whole = true;
+  /** The first touch swaps in the real, bendable bars. */
+  const wake = () => {
+    if (!whole) return;
+    whole = false;
+    root.remove(intact);
+    holders.forEach((h) => (h.visible = true));
+  };
+
   // Bend targets are eased towards, so a bump looks like the bars giving way.
   const target = new Map<Bar, { bend: number; spread: number }>();
   function setTargets(side: Side) {
@@ -182,6 +211,7 @@ export function createCage(cx = CAGE.x, cz = CAGE.z): Cage {
       return hit;
     },
     bump(i, dir = 1) {
+      wake();
       const side = sides[i];
       side.dir = dir;
       side.damage++;
@@ -191,12 +221,14 @@ export function createCage(cx = CAGE.x, cz = CAGE.z): Cage {
       return side.open;
     },
     rattle() {
+      wake();
       for (const s of sides) s.shake = Math.max(s.shake, 0.6);
     },
     inside(p) {
       return Math.abs(p.x - cx) < CAGE.half + 0.5 && Math.abs(p.z - cz) < CAGE.half + 0.5;
     },
     update(dt, t) {
+      if (whole) return; // nothing to animate until a bar is touched
       for (const side of sides) {
         side.shake = Math.max(0, side.shake - dt * 2.5);
         for (const b of side.bars) {
@@ -237,6 +269,7 @@ const glassMat = new THREE.MeshLambertMaterial({ color: '#bfe6ff', transparent: 
 export function createCar(color: string, stripe: string): Car {
   const g = new THREE.Group();
   const body = new THREE.MeshLambertMaterial({ color, flatShading: true });
+  body.userData.dynamic = true; // darkens when wrecked
   owned.push(body);
   const tire = mat('#2a2a2a');
   const rim = mat('#c9c9c9');
@@ -264,6 +297,7 @@ export function createCar(color: string, stripe: string): Car {
     m.userData.k = i / 4;
     return m;
   });
+  bake(g, [], owned);
   return { group: g, body, heading: 0, wrecked: false, t: 0, from: new THREE.Vector3(), push: new THREE.Vector3(), roll: 1, smoke };
 }
 
@@ -405,6 +439,7 @@ export function createPerson(rand: () => number, kind: Person['kind'] = 'visitor
   alert.position.y = 4;
   // Kept for the panic bob, but not shown: a cartoon "!" doesn't suit the game any more.
   alert.visible = false;
+  bake(g, [...legs, ...arms], owned);
   return { group: g, legs, arms, alert, state: 'idle', t: 0, heading: rand() * 6, vel: new THREE.Vector3(), phase: rand() * 6, kind, aim: 0 };
 }
 

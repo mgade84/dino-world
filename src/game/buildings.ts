@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { groundY, TOWN } from './world';
+import { bake } from './merge';
 
 /**
  * Main Street's buildings, each made of pre-broken pieces: wall panels, window glass and roof slabs.
@@ -28,6 +29,8 @@ export interface Building {
   hp: number;
   state: 'standing' | 'rubble';
   chunks: Chunk[];
+  /** While undamaged, the whole building is drawn as a few merged meshes and the chunks are hidden. */
+  intact: THREE.Group | null;
   /** Shakes after a hit. */
   shake: number;
   /** Seconds before it can be hit again (one charge shouldn't count as several hits). */
@@ -97,7 +100,7 @@ export function createTown(scene: THREE.Scene): Town {
     scene.add(group);
     const b: Building = {
       group, minX: p.x - p.w / 2, maxX: p.x + p.w / 2, minZ: p.z - p.d / 2, maxZ: p.z + p.d / 2,
-      height: p.h, hp: p.hp, state: 'standing', chunks: [], shake: 0, cool: 0,
+      height: p.h, hp: p.hp, state: 'standing', chunks: [], intact: null, shake: 0, cool: 0,
     };
     const wall = mat(p.wall);
     // The street-facing side gets the door and shop windows.
@@ -141,6 +144,19 @@ export function createTown(scene: THREE.Scene): Town {
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) chunk(b, roof, [p.w / 2 + 0.3, 0.3, p.d / 2 + 0.3], [(sx * (p.w / 2 + 0.3)) / 2, p.h + 0.15, (sz * (p.d / 2 + 0.3)) / 2]);
     // A canvas awning over the shop front.
     if (p.awning) chunk(b, mat(p.awning, 0.9), [p.w * 0.8, 0.12, 1.6], [0, rowH * 0.95, front * (p.d / 2 + 0.75)]);
+    // Draw the whole building as one mesh per material until it is first hit.
+    const intact = new THREE.Group();
+    for (const c of b.chunks) {
+      const copy = new THREE.Mesh(c.mesh.geometry, c.mesh.material);
+      copy.position.copy(c.mesh.position);
+      copy.scale.copy(c.mesh.scale);
+      copy.castShadow = true;
+      intact.add(copy);
+      c.mesh.visible = false;
+    }
+    bake(intact, [], owned);
+    group.add(intact);
+    b.intact = intact;
     return b;
   });
 
@@ -167,6 +183,15 @@ export function createTown(scene: THREE.Scene): Town {
     scene.add(head);
     heads.push(pole, arm, head);
   }
+  // Poles and arms as one mesh, lamp heads as another (its material switches with the power).
+  const lampGroup = new THREE.Group();
+  for (const m of heads) {
+    scene.remove(m);
+    lampGroup.add(m);
+  }
+  scene.add(lampGroup);
+  bake(lampGroup, [], owned);
+  const headMesh = lampGroup.children.find((m) => (m as THREE.Mesh).material === lampOn) as THREE.Mesh;
 
   const tmp = new THREE.Vector3();
 
@@ -226,6 +251,12 @@ export function createTown(scene: THREE.Scene): Town {
     },
     hit(b, from) {
       if (b.state !== 'standing' || b.cool > 0) return false;
+      // First hit: swap the merged building for its separate panels.
+      if (b.intact) {
+        b.group.remove(b.intact);
+        b.intact = null;
+        for (const c of b.chunks) c.mesh.visible = true;
+      }
       b.cool = 0.7;
       b.hp--;
       b.shake = 1;
@@ -245,7 +276,7 @@ export function createTown(scene: THREE.Scene): Town {
       return true;
     },
     setLights(on) {
-      heads.forEach((m, i) => i % 3 === 2 && (m.material = on ? lampOn : lampOff));
+      headMesh.material = on ? lampOn : lampOff;
     },
     pavement(rand) {
       const row = rand() < 0.5 ? -1 : 1;
@@ -304,7 +335,7 @@ export function createTown(scene: THREE.Scene): Town {
         for (const c of b.chunks) scene.remove(c.mesh);
       }
       dust.forEach((d) => scene.remove(d.mesh));
-      heads.forEach((m) => scene.remove(m));
+      scene.remove(lampGroup);
       owned.forEach((o) => o.dispose());
     },
   };

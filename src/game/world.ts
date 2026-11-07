@@ -358,7 +358,7 @@ export function buildWorld(): World {
 
   const flat = { flatShading: true };
   instanced(new THREE.CylinderGeometry(0.8, 1, 1, 9), lambert({ color: '#3b3026' }), trunks);
-  instanced(lumpy(new THREE.IcosahedronGeometry(1, 2), 0.22, 11), lambert({ color: '#ffffff' }), canopies);
+  instanced(lumpy(new THREE.IcosahedronGeometry(1, 1), 0.2, 11), lambert({ color: "#ffffff" }), canopies);
   instanced(leafGeometry(), lambert({ color: '#ffffff', side: THREE.DoubleSide }), fronds);
   instanced(lumpy(new THREE.IcosahedronGeometry(1, 1), 0.25, 12), lambert({ color: '#ffffff' }), bushes);
   instanced(lumpy(new THREE.DodecahedronGeometry(1, 1), 0.18, 13), lambert({ color: '#ffffff', ...flat }), rocks);
