@@ -21,7 +21,7 @@ import { clock, M as STRINGS, S } from './strings';
 import { createWeather, STORM } from './weather';
 import './dino.css';
 
-/** Jeeps (each with a person beside it) in Rampage, respawned once all are wrecked and scared. */
+/** Jeeps (each with a person beside it) in Rampage on a map without any, respawned once all are wrecked and scared. */
 const RAMPAGE_TARGETS = 10;
 const NPCS = 6;
 /** Rampage: rangers on the island. */
@@ -441,7 +441,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   let people: Person[] = [];
   /** Enough jeeps (and a person by each) to meet the level's goals with a couple to spare. */
   const targetCount = () => {
-    if (!level) return RAMPAGE_TARGETS;
+    if (!level) return MAP.cars?.length ? 0 : RAMPAGE_TARGETS;
     const need = Math.max(0, ...goals.map((g) => (g.kind === 'smash' || g.kind === 'scare' ? g.n : 0)));
     return need ? need + 2 : 4;
   };
@@ -454,8 +454,14 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     people.forEach((pp) => scene.remove(pp.group));
     cars = [];
     people = [];
+    // The map's jeeps, all of them, then random ones if the level needs more (or the map has none).
     const sites: THREE.Vector3[] = [];
-    const n = targetCount();
+    const headings: number[] = [];
+    for (const c of MAP.cars ?? []) {
+      sites.push(new THREE.Vector3(c.x, floorY(c.x, c.z), c.z));
+      headings.push((c.a * Math.PI) / 180);
+    }
+    const n = Math.max(sites.length, targetCount());
     for (let tries = 0; sites.length < n && tries < 3000; tries++) {
       const p = world.openSpot(placeRand, 5);
       if (Math.hypot(p.x - CAGE.x, p.z - CAGE.z) < 30) continue;
@@ -464,7 +470,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     }
     sites.forEach((p, i) => {
       const car = createCar(CAR_COLORS[i % CAR_COLORS.length], i % 2 ? '#ffffff' : '#2f2f2f');
-      car.heading = placeRand() * Math.PI * 2;
+      car.heading = headings[i] ?? placeRand() * Math.PI * 2;
       car.group.position.copy(p);
       car.group.rotation.y = car.heading;
       scene.add(car.group);

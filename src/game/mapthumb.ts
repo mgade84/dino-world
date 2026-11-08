@@ -30,6 +30,7 @@ export function mapThumb(m: MapDef): string {
     const r = p.reduce((a, q) => a + Math.hypot(q[0] - c[0], q[1] - c[1]), 0) / p.length;
     out.push(poly(p, 'fill="#3a2f2b"'), `<circle cx="${n(c[0])}" cy="${n(c[1])}" r="${n(Math.max(2.5, r * 0.24))}" fill="#c8401e"/>`);
   }
+  for (const c of m.cars ?? []) out.push(`<circle cx="${n(c.x)}" cy="${n(c.z)}" r="2.2" fill="#f4b63a"/>`);
   for (const c of m.cages) out.push(rect(c.x, c.z, 14, 14, 'fill="none" stroke="#d8d8c8" stroke-width="1.5"'));
   out.push(rect(m.paddock.x, m.paddock.z, 14, 14, 'fill="none" stroke="#c8401e" stroke-width="2.5"'));
   return `<span class="dn-thumb"><svg viewBox="${-h} ${-h} ${2 * h} ${2 * h}" aria-hidden="true">${out.join('')}</svg></span>`;

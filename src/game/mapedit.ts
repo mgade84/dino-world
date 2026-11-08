@@ -6,16 +6,16 @@ import { createFences } from './fences';
 import { LEVELS } from './levels';
 import { DEFAULT_MAP, drafts, getMap, MAPS, setDraft, type MapDef } from './maps';
 import { canon, mapSource } from './maps/source';
-import type { House, Pt, Shape, Spot } from './maps/types';
+import type { CarSpot, House, Pt, Shape, Spot } from './maps/types';
 import { disposeMerged } from './merge';
-import { CAGE, createCage, createPerson, disposePark } from './park';
+import { CAGE, CAR_COLORS, createCage, createCar, createPerson, disposePark } from './park';
 import { area, circle, resample, sdPoly, simplify, soften, toPath } from './shapes';
 import { createStation } from './station';
 import { buildWorld, groundY, rng, SCALE, toLine, useMap } from './world';
 
 /**
  * The map editor (#/map, #/map/<id>): the real 3D world drawn straight from above, with the map's
- * layout on top to edit. Put down and move cages, buildings, fences, people and guard posts; draw roads,
+ * layout on top to edit. Put down and move cages, buildings, fences, people, guard posts and jeeps; draw roads,
  * hills, lakes, plateaus and volcanoes freehand; reseed the trees and rocks. Changes are kept in this
  * browser as a draft until saved: on the dev server Save writes src/game/maps/<id>.ts, and Download gives
  * the same file anywhere. Try it plays Rampage on the map as it stands. x grows to the right and z
@@ -28,7 +28,7 @@ const T = {
     saved: 'Saved', unsaved: 'Unsaved changes', draft: 'Not saved yet', saving: 'Saving…', saveFailed: 'Could not save', updating: 'Updating…', savedTo: 'Saved to', ground: 'ground',
     askName: 'Name of the new map:', newName: 'New island', copyOf: 'Copy of',
     revert: 'Discard changes', revertAsk: 'Discard the unsaved changes to this map?', deleteDraft: 'Delete this map', deleteAsk: 'Delete this map? It was never saved to the project.',
-    tools: { select: 'Select', erase: 'Erase', cage: 'Cage', building: 'Building', fence: 'Fence', person: 'Person', guard: 'Guard', road: 'Road', lake: 'Lake', hill: 'Hill', mesa: 'Plateau', volcano: 'Volcano' },
+    tools: { select: 'Select', erase: 'Erase', cage: 'Cage', building: 'Building', fence: 'Fence', person: 'Person', guard: 'Guard', car: 'Jeep', road: 'Road', lake: 'Lake', hill: 'Hill', mesa: 'Plateau', volcano: 'Volcano' },
     hints: {
       select: 'Tap something to select it, and drag to move it. Drag empty ground to pan.',
       erase: 'Tap or drag over things to remove them.',
@@ -37,6 +37,7 @@ const T = {
       fence: 'Drag from one end of the fence to the other.',
       person: 'Tap to put a park visitor.',
       guard: 'Tap to put a ranger’s post.',
+      car: 'Tap to park a jeep (on a road it lines up with it). A visitor stands beside each. Select it to turn it.',
       road: 'Draw along the road.',
       lake: 'Draw round the edge of the lake, or tap for a round one.',
       hill: 'Draw along a ridge, or tap for a round hill. A negative height digs a hollow.',
@@ -44,10 +45,10 @@ const T = {
       volcano: 'Draw round the foot of the volcano, or tap for a round one. Bigger ones are taller.',
     },
     pan: 'Pan with two fingers, the right mouse button or Space + drag. Zoom with a pinch or the scroll wheel.',
-    kinds: { paddock: 'Paddock (start)', cage: 'Cage', building: 'Building', fence: 'Fence', person: 'Person', guard: 'Guard post', road: 'Road', lake: 'Lake', hill: 'Hill', mesa: 'Plateau', volcano: 'Volcano', town: 'Main Street', power: 'Power station', docks: 'Docks' },
+    kinds: { paddock: 'Paddock (start)', cage: 'Cage', building: 'Building', fence: 'Fence', person: 'Person', guard: 'Guard post', car: 'Jeep', road: 'Road', lake: 'Lake', hill: 'Hill', mesa: 'Plateau', volcano: 'Volcano', town: 'Main Street', power: 'Power station', docks: 'Docks' },
     map: 'Map', nameEn: 'Name (English)', nameDa: 'Name (Danish)', half: 'Half width', shore: 'Shore (z)', relief: 'Rolling hills', reliefSeed: 'Hills seed', trees: 'Trees', palms: 'Share of palms', bushes: 'Bushes', rocks: 'Rocks', seed: 'Jungle seed',
-    width: 'Width', height: 'Height', depth: 'Depth', radius: 'Radius', level: 'Ground height', style: 'Colours', hp: 'Bites to wreck', turn: 'Turn round', shop: 'Shop', bigShop: 'Big shop', shed: 'Shed', remove: 'Remove', kind: 'Kind', newSeed: 'New',
-    siteMoves: 'Moving it takes the buildings, people and guard posts on it along.', sizeNote: 'Size in metres (drawn 1.5 times bigger).',
+    width: 'Width', height: 'Height', depth: 'Depth', radius: 'Radius', level: 'Ground height', style: 'Colours', hp: 'Bites to wreck', turn: 'Turn round', shop: 'Shop', bigShop: 'Big shop', shed: 'Shed', remove: 'Remove', kind: 'Kind', newSeed: 'New', heading: 'Heading (°)',
+    siteMoves: 'Moving it takes the buildings, people, guard posts and jeeps on it along.', sizeNote: 'Size in metres (drawn 1.5 times bigger).',
     sea: 'sea', play: 'Play area', intro: 'opening shot', pier: 'Pier', file: 'File',
   },
   da: {
@@ -55,7 +56,7 @@ const T = {
     saved: 'Gemt', unsaved: 'Ikke gemte ændringer', draft: 'Ikke gemt endnu', saving: 'Gemmer…', saveFailed: 'Kunne ikke gemme', updating: 'Opdaterer…', savedTo: 'Gemt i', ground: 'jord',
     askName: 'Navn på det nye kort:', newName: 'Ny ø', copyOf: 'Kopi af',
     revert: 'Kassér ændringer', revertAsk: 'Kassér de ikke gemte ændringer på dette kort?', deleteDraft: 'Slet dette kort', deleteAsk: 'Slet dette kort? Det blev aldrig gemt i projektet.',
-    tools: { select: 'Vælg', erase: 'Slet', cage: 'Bur', building: 'Bygning', fence: 'Hegn', person: 'Person', guard: 'Vagt', road: 'Vej', lake: 'Sø', hill: 'Bakke', mesa: 'Plateau', volcano: 'Vulkan' },
+    tools: { select: 'Vælg', erase: 'Slet', cage: 'Bur', building: 'Bygning', fence: 'Hegn', person: 'Person', guard: 'Vagt', car: 'Jeep', road: 'Vej', lake: 'Sø', hill: 'Bakke', mesa: 'Plateau', volcano: 'Vulkan' },
     hints: {
       select: 'Tryk på noget for at vælge det, og træk for at flytte det. Træk i tom jord for at flytte kortet.',
       erase: 'Tryk eller træk hen over ting for at fjerne dem.',
@@ -64,6 +65,7 @@ const T = {
       fence: 'Træk fra den ene ende af hegnet til den anden.',
       person: 'Tryk for at sætte en gæst i parken.',
       guard: 'Tryk for at sætte en vagtpost.',
+      car: 'Tryk for at parkere en jeep (på en vej retter den sig efter vejen). Der står en gæst ved hver. Vælg den for at dreje den.',
       road: 'Tegn langs vejen.',
       lake: 'Tegn rundt om søens bred, eller tryk for en rund sø.',
       hill: 'Tegn langs en bakkekam, eller tryk for en rund bakke. En negativ højde graver en lavning.',
@@ -71,10 +73,10 @@ const T = {
       volcano: 'Tegn rundt om vulkanens fod, eller tryk for en rund vulkan. Større vulkaner er højere.',
     },
     pan: 'Flyt kortet med to fingre, højre museknap eller mellemrum + træk. Zoom ved at knibe eller med musehjulet.',
-    kinds: { paddock: 'Indhegning (start)', cage: 'Bur', building: 'Bygning', fence: 'Hegn', person: 'Person', guard: 'Vagtpost', road: 'Vej', lake: 'Sø', hill: 'Bakke', mesa: 'Plateau', volcano: 'Vulkan', town: 'Hovedgaden', power: 'Kraftværk', docks: 'Havn' },
+    kinds: { paddock: 'Indhegning (start)', cage: 'Bur', building: 'Bygning', fence: 'Hegn', person: 'Person', guard: 'Vagtpost', car: 'Jeep', road: 'Vej', lake: 'Sø', hill: 'Bakke', mesa: 'Plateau', volcano: 'Vulkan', town: 'Hovedgaden', power: 'Kraftværk', docks: 'Havn' },
     map: 'Kort', nameEn: 'Navn (engelsk)', nameDa: 'Navn (dansk)', half: 'Halv bredde', shore: 'Kyst (z)', relief: 'Bølgende bakker', reliefSeed: 'Bakkefrø', trees: 'Træer', palms: 'Andel palmer', bushes: 'Buske', rocks: 'Sten', seed: 'Junglefrø',
-    width: 'Bredde', height: 'Højde', depth: 'Dybde', radius: 'Radius', level: 'Jordhøjde', style: 'Farver', hp: 'Bid før den er ødelagt', turn: 'Vend om', shop: 'Butik', bigShop: 'Stor butik', shed: 'Skur', remove: 'Fjern', kind: 'Slags', newSeed: 'Ny',
-    siteMoves: 'Flytter du den, kommer bygninger, folk og vagtposter på den med.', sizeNote: 'Størrelse i meter (tegnet 1,5 gange større).',
+    width: 'Bredde', height: 'Højde', depth: 'Dybde', radius: 'Radius', level: 'Jordhøjde', style: 'Farver', hp: 'Bid før den er ødelagt', turn: 'Vend om', shop: 'Butik', bigShop: 'Stor butik', shed: 'Skur', remove: 'Fjern', kind: 'Slags', newSeed: 'Ny', heading: 'Retning (°)',
+    siteMoves: 'Flytter du den, kommer bygninger, folk, vagtposter og jeeps på den med.', sizeNote: 'Størrelse i meter (tegnet 1,5 gange større).',
     sea: 'hav', play: 'Spilleområde', intro: 'åbningsbillede', pier: 'Mole', file: 'Fil',
   },
 };
@@ -108,10 +110,10 @@ const CSS = `
 
 type ToolId = keyof typeof T.en.tools;
 const TOOLS: [ToolId, string][] = [
-  ['select', '👆'], ['erase', '🧽'], ['cage', '🦖'], ['building', '🏠'], ['fence', '⚡'], ['person', '🧍'], ['guard', '👮'],
+  ['select', '👆'], ['erase', '🧽'], ['cage', '🦖'], ['building', '🏠'], ['fence', '⚡'], ['person', '🧍'], ['guard', '👮'], ['car', '🚙'],
   ['road', '🛣️'], ['lake', '💧'], ['hill', '⛰️'], ['mesa', '🏜️'], ['volcano', '🌋'],
 ];
-const LISTS = { cage: 'cages', building: 'buildings', fence: 'fences', person: 'people', guard: 'guards', road: 'roads', hill: 'hills', lake: 'lakes', mesa: 'mesas', volcano: 'volcanoes' } as const;
+const LISTS = { cage: 'cages', building: 'buildings', fence: 'fences', person: 'people', guard: 'guards', car: 'cars', road: 'roads', hill: 'hills', lake: 'lakes', mesa: 'mesas', volcano: 'volcanoes' } as const;
 type ListKind = keyof typeof LISTS;
 type Kind = ListKind | 'paddock' | 'town' | 'power' | 'docks';
 interface Sel { k: Kind; i: number }
@@ -132,13 +134,25 @@ const r1 = (v: number) => Math.round(v * 10) / 10;
 const clone = <V>(v: V): V => JSON.parse(JSON.stringify(v)) as V;
 const outlineOf = (s: Shape, wobble?: number): Pt[] => ('pts' in s ? s.pts : circle(s.x, s.z, s.r, wobble));
 const mesaWobble = (i: number) => 0.4 + i * 1.35;
+/** A jeep's footprint in metres (it faces +z at heading 0). */
+const CAR_W = 2.5;
+const CAR_L = 5.2;
+const rad = (deg: number) => (deg * Math.PI) / 180;
+/** A point in a jeep's own frame: along its length and across it. */
+const carLocal = (c: CarSpot, x: number, z: number) => {
+  const dx = x - c.x;
+  const dz = z - c.z;
+  const s = Math.sin(rad(c.a));
+  const k = Math.cos(rad(c.a));
+  return { along: dx * s + dz * k, across: dx * k - dz * s };
+};
 
 /** A new map: the default island's sites and buildings, and nothing else. */
 function blank(id: string, name: string): MapDef {
   const base = getMap(DEFAULT_MAP);
   return canon({
     ...clone(base), id, name: { en: name, da: name }, seed: Math.floor(Math.random() * 1e5), relief: { scale: 1, seed: r1(Math.random() * 20) },
-    hills: [], cages: [], lakes: [], volcanoes: [], mesas: [], roads: [], fences: [], people: [], guards: [],
+    hills: [], cages: [], lakes: [], volcanoes: [], mesas: [], roads: [], fences: [], people: [], guards: [], cars: [],
   });
 }
 
@@ -235,6 +249,7 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
   }
 
   // ---- Items: find, move and remove them generically ----
+  const cars = () => (map.cars ??= []);
   const get = (s: Sel): Item => (isList(s.k) ? (map[LISTS[s.k]] as unknown[])[s.i] : map[s.k]);
   const removable = (k: Kind) => isList(k);
   function remove(s: Sel) {
@@ -262,6 +277,10 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
     const tests: [Kind, () => number][] = [
       ['person', () => last(map.people, (p) => Math.hypot(x - p.x, z - p.z) < Math.max(1.4, tol))],
       ['guard', () => last(map.guards, (p) => Math.hypot(x - p.x, z - p.z) < Math.max(1.4, tol))],
+      ['car', () => last(cars(), (c) => {
+        const l = carLocal(c, x, z);
+        return Math.abs(l.along) < Math.max(CAR_L / 2, tol) && Math.abs(l.across) < Math.max(CAR_W / 2, tol);
+      })],
       ['fence', () => last(map.fences, (l) => toLine(x, z, l) < Math.max(1.5, tol * 0.8))],
       ['building', () => last(map.buildings, (b) => inRect(x, z, b.x, b.z, b.w * SCALE, b.d * SCALE))],
       ['cage', () => last(map.cages, (c) => inRect(x, z, c.x, c.z, CAGE.half * 2, CAGE.half * 2))],
@@ -290,6 +309,7 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
     add('building', map.buildings);
     add('person', map.people);
     add('guard', map.guards);
+    add('car', cars());
     return out;
   }
 
@@ -300,6 +320,23 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
     if (k === 'cage') return { k, i: map.cages.push({ x, z }) - 1 };
     if (k === 'person') return { k, i: map.people.push({ x, z }) - 1 };
     if (k === 'guard') return { k, i: map.guards.push({ x, z }) - 1 };
+    if (k === 'car') {
+      // On (or by) a road, it lines up with the road; elsewhere it faces +z.
+      let a = 0;
+      let best = Infinity;
+      for (const r of map.roads) {
+        for (let j = 1; j < r.pts.length; j++) {
+          const [ax, az] = r.pts[j - 1];
+          const [bx, bz] = r.pts[j];
+          const d = toPath(x, z, [r.pts[j - 1], r.pts[j]]);
+          if (d < r.w / 2 + 3 && d < best) {
+            best = d;
+            a = Math.round((Math.atan2(bx - ax, bz - az) * 180) / Math.PI);
+          }
+        }
+      }
+      return { k, i: cars().push({ x, z, a }) - 1 };
+    }
     if (k === 'building') {
       const p = PRESETS[opts.preset];
       const shops = map.buildings.filter((b) => b.kind !== 'shed').length;
@@ -386,6 +423,12 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
     };
     map.people.forEach((p) => stand(p, 'visitor'));
     map.guards.forEach((p) => stand(p, 'ranger'));
+    cars().forEach((c, i) => {
+      const car = createCar(CAR_COLORS[i % CAR_COLORS.length], i % 2 ? '#ffffff' : '#2f2f2f');
+      car.group.position.set(c.x, groundY(c.x, c.z), c.z);
+      car.group.rotation.y = rad(c.a);
+      s.add(car.group);
+    });
     scene = s;
     renderer.shadowMap.needsUpdate = true;
     busy.hidden = true;
@@ -535,6 +578,17 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
     });
     map.people.forEach((p, i) => dot(p.x, p.z, 0.9, '#ffffff', isSel('person', i)));
     map.guards.forEach((p, i) => dot(p.x, p.z, 0.9, '#4aa8ff', isSel('guard', i)));
+    cars().forEach((c, i) => {
+      const s_ = isSel('car', i);
+      const f = [Math.sin(rad(c.a)), Math.cos(rad(c.a))];
+      const sd = [f[1], -f[0]];
+      const corner = (l: number, w_: number): Pt => [c.x + f[0] * l + sd[0] * w_, c.z + f[1] * l + sd[1] * w_];
+      const body = [corner(CAR_L / 2, CAR_W / 2), corner(CAR_L / 2, -CAR_W / 2), corner(-CAR_L / 2, -CAR_W / 2), corner(-CAR_L / 2, CAR_W / 2)];
+      shape(body, '#ffb84a', 'rgba(255,184,74,0.2)', s_);
+      // An arrow out of the front, so the heading reads at any zoom.
+      const tip = corner(CAR_L / 2 + Math.max(1.5, 10 * px), 0);
+      line(c.x, c.z, tip[0], tip[1], s_ ? HI : '#ffb84a', 2.5);
+    });
 
     // Each level on this map: where the dinosaur starts (and which way it faces), and the opening shot.
     LEVELS.forEach((lv, i) => {
@@ -637,6 +691,11 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
       } else if (!o.pts) {
         field('x', o.x, (v) => (o.x = v));
         field('z', o.z, (v) => (o.z = v));
+      }
+      if (s.k === 'car') {
+        field(t.heading, o.a, (v) => (o.a = Math.round((((v % 360) + 360) % 360))), { step: 15 });
+        // z grows downwards on screen, so a bigger heading turns it anticlockwise there.
+        buttons(button('↺ 45°', edit(() => (o.a = (o.a + 45) % 360))), button('↻ 45°', edit(() => (o.a = (o.a + 315) % 360))));
       }
       if ('r' in o) field(t.radius, o.r, (v) => (o.r = Math.max(2, v)));
       if (s.k === 'building') {
@@ -857,7 +916,7 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
     } else if (tool === 'erase') {
       gesture = { kind: 'erase', before };
       eraseAt(p);
-    } else if (tool === 'cage' || tool === 'building' || tool === 'person' || tool === 'guard') {
+    } else if (tool === 'cage' || tool === 'building' || tool === 'person' || tool === 'guard' || tool === 'car') {
       const placed = place(tool, p[0], p[1]);
       if (!placed) return;
       sel = placed;

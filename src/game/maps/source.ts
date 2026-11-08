@@ -53,12 +53,12 @@ export default map;
 
 const ORDER: (keyof MapDef)[] = [
   'id', 'name', 'seed', 'half', 'relief', 'hills', 'paddock', 'cages', 'lakes', 'volcanoes', 'mesas', 'roads',
-  'shore', 'town', 'power', 'docks', 'buildings', 'fences', 'people', 'guards', 'plants',
+  'shore', 'town', 'power', 'docks', 'buildings', 'fences', 'people', 'guards', 'cars', 'plants',
 ];
 
 /** The map with its fields in the usual order, filling in any a hand-written file left out. */
 export function canon(m: MapDef): MapDef {
-  const filled = { hills: [], roads: [], buildings: [], people: [], guards: [], ...(m as Partial<MapDef>) } as MapDef;
+  const filled = { hills: [], roads: [], buildings: [], people: [], guards: [], cars: [], ...(m as Partial<MapDef>) } as MapDef;
   const out: Record<string, unknown> = {};
   for (const k of ORDER) out[k] = filled[k];
   return JSON.parse(JSON.stringify(out)) as MapDef;

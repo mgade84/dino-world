@@ -48,6 +48,8 @@ export const HOUSES: House[] = [];
 export const PADDOCK = { x: 0, z: 0 };
 /** Clearings kept free of plants and rocks for the other dinosaurs' cages. */
 export const CAGE_SPOTS: Circle[] = [];
+/** Room kept clear round each of the map's jeeps (and the visitor beside it). */
+const CAR_SPOTS: Circle[] = [];
 
 /** A flattened, clear rectangle: centre, width along x, depth along z, and the height it is levelled to. */
 export interface Site { x: number; z: number; w: number; d: number; y: number }
@@ -101,6 +103,7 @@ export function useMap(map: MapDef) {
   fill(ROADS, map.roads.map((r) => ({ ...r, pts: r.pts.map((p) => [p[0], p[1]] as Pt), box: boxOf(r.pts, r.w / 2) })));
   fill(HOUSES, map.buildings.map((b) => ({ ...b })));
   fill(CAGE_SPOTS, map.cages.map((c) => ({ ...c, r: 13 })));
+  fill(CAR_SPOTS, (map.cars ?? []).map((c) => ({ x: c.x, z: c.z, r: 6.5 })));
   // Each building stands on a pad levelled to the ground at its centre.
   fill(PADS, []);
   fill(PADS, HOUSES.map((b) => ({ x: b.x, z: b.z, w: b.w * SCALE + 1, d: b.d * SCALE + 1, y: groundY(b.x, b.z) })));
@@ -206,6 +209,92 @@ function lumpy(geo: THREE.BufferGeometry, amount: number, seed: number) {
   return geo;
 }
 
+/**
+ * A dirt track, painted on a canvas: wet mud with two darker tyre ruts (tread marks and puddles in them),
+ * a strip of grass down the middle and soft edges that fade into the ground. `u` runs across the road,
+ * `v` along it (one repeat is TRACK metres); `rough` is its roughness map, slick in the ruts.
+ */
+const TRACK = 10;
+function trackTextures() {
+  const W = 128;
+  const H = 512;
+  const r = rng(91);
+  const make = () => {
+    const c = document.createElement('canvas');
+    c.width = W;
+    c.height = H;
+    return [c, c.getContext('2d')!] as const;
+  };
+  const [cc, g] = make();
+  const [rc, rg] = make();
+  // Mud, mottled.
+  g.fillStyle = '#56462f';
+  g.fillRect(0, 0, W, H);
+  rg.fillStyle = '#d0d0d0';
+  rg.fillRect(0, 0, W, H);
+  const blot = (ctx: CanvasRenderingContext2D, x: number, y: number, rx: number, ry: number, style: string) => {
+    ctx.fillStyle = style;
+    ctx.beginPath();
+    // Drawn three times over the seam so the texture tiles along v.
+    for (const dy of [-H, 0, H]) ctx.ellipse(x, y + dy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+  };
+  for (let i = 0; i < 900; i++) {
+    const l = 0.75 + r() * 0.5;
+    blot(g, r() * W, r() * H, 2 + r() * 7, 2 + r() * 9, `rgba(${Math.round(86 * l)},${Math.round(70 * l)},${Math.round(47 * l)},0.5)`);
+  }
+  // Grass down the middle and creeping in at the edges.
+  for (let i = 0; i < 700; i++) {
+    const edge = r() < 0.45;
+    const x = edge ? (r() < 0.5 ? r() * 22 : W - r() * 22) : W / 2 + (r() - 0.5) * 26 * (0.6 + r() * 0.6);
+    const gr = 0.8 + r() * 0.4;
+    blot(g, x, r() * H, 1 + r() * 3, 2 + r() * 5, `rgba(${Math.round(58 * gr)},${Math.round(86 * gr)},${Math.round(44 * gr)},0.75)`);
+  }
+  // Two ruts: darker, wetter, wandering a little, with tread marks across them and puddles.
+  for (const u of [0.3, 0.7]) {
+    const wob = r() * 6;
+    for (let y = -8; y < H + 8; y += 2) {
+      const x = W * u + Math.sin((y / H) * Math.PI * 2 * 2 + wob) * 2.5 + Math.sin((y / H) * Math.PI * 2 * 5 + wob) * 1;
+      g.fillStyle = 'rgba(52,41,29,0.5)';
+      g.fillRect(x - 10, y, 20, 3);
+      g.fillStyle = 'rgba(42,33,24,0.55)';
+      g.fillRect(x - 7, y, 14, 3);
+      rg.fillStyle = 'rgba(70,70,70,0.6)';
+      rg.fillRect(x - 8, y, 16, 3);
+      if (y % 8 === 0) {
+        g.fillStyle = 'rgba(30,24,18,0.45)';
+        g.fillRect(x - 7, y, 14, 2);
+      }
+    }
+    for (let i = 0; i < 3; i++) {
+      const x = W * u + (r() - 0.5) * 4;
+      const y = r() * H;
+      const rx = 3.5 + r() * 2.5;
+      const ry = 8 + r() * 16;
+      blot(g, x, y, rx, ry, 'rgba(48,40,30,0.6)');
+      blot(rg, x, y, rx, ry, 'rgba(10,10,10,0.9)');
+    }
+  }
+  // Soft edges.
+  const fade = g.createLinearGradient(0, 0, W, 0);
+  fade.addColorStop(0, 'rgba(0,0,0,0)');
+  fade.addColorStop(0.13, 'rgba(0,0,0,1)');
+  fade.addColorStop(0.87, 'rgba(0,0,0,1)');
+  fade.addColorStop(1, 'rgba(0,0,0,0)');
+  g.globalCompositeOperation = 'destination-in';
+  g.fillStyle = fade;
+  g.fillRect(0, 0, W, H);
+  const map = new THREE.CanvasTexture(cc);
+  map.colorSpace = THREE.SRGBColorSpace;
+  const rough = new THREE.CanvasTexture(rc);
+  for (const t of [map, rough]) {
+    t.wrapS = THREE.ClampToEdgeWrapping;
+    t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = 4;
+  }
+  return { map, rough };
+}
+
 export function buildWorld(): World {
   const rand = rng(MAP.seed);
   const group = new THREE.Group();
@@ -231,6 +320,7 @@ export function buildWorld(): World {
   function blocked(x: number, z: number, clear: number) {
     if (VOLCANOES.some((v) => outBox(v.box, x, z) < clear && sdPoly(x, z, v.pts) < clear)) return true;
     if (CAGE_SPOTS.some((c) => Math.hypot(x - c.x, z - c.z) < c.r + clear)) return true;
+    if (CAR_SPOTS.some((c) => Math.hypot(x - c.x, z - c.z) < c.r + clear)) return true;
     if (SITES.some((site) => outside(site, x, z) < 4 + clear)) return true;
     if (PADS.some((pad) => outside(pad, x, z) < 2 + clear)) return true;
     if (ROADS.some((r) => outBox(r.box, x, z) < 1.5 + clear && toPath(x, z, r.pts) < r.w / 2 + 1.5 + clear)) return true;
@@ -269,7 +359,7 @@ export function buildWorld(): World {
     for (const r of ROADS) {
       if (outBox(r.box, x, z) > 3) continue;
       const dr = toPath(x, z, r.pts) - r.w / 2;
-      if (dr < 3) tmp.lerp(dirt, 0.75 * smooth(3, 0, dr));
+      if (dr < 3) tmp.lerp(dirt, 0.5 * smooth(3, 0, dr));
     }
     tmp.lerp(rock, smooth(0.7, 1.1, slopeAt(x, z)));
     col.set([tmp.r, tmp.g, tmp.b], i * 3);
@@ -299,15 +389,26 @@ export function buildWorld(): World {
   const stripe = keep(new THREE.MeshBasicMaterial({ color: '#8a8470' }));
   for (let k = -5; k <= 5; k++) slab(2.2, 0.18, stripe, TOWN.x + k * 5, TOWN.z, TOWN.y + 0.08);
 
-  // ---- Roads: a ribbon draped over the ground along each path ----
-  const roadMat = keep(new THREE.MeshStandardMaterial({ color: '#2e2f2e', roughness: 0.4, metalness: 0.05, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4, side: THREE.DoubleSide }));
+  // ---- Roads: dirt tracks, a ribbon draped over the ground along each path ----
+  const track = ROADS.length ? trackTextures() : null;
+  const roadMat = track
+    ? keep(new THREE.MeshStandardMaterial({
+        map: keep(track.map), roughnessMap: keep(track.rough), roughness: 1, metalness: 0,
+        transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4, side: THREE.DoubleSide,
+      }))
+    : null;
   for (const road of ROADS) {
     const line = resample(road.pts, 1.5);
-    if (line.length < 2) continue;
-    const across = 4;
+    if (!roadMat || line.length < 2) continue;
+    // A bit wider than the road itself, for the edges to fade out over.
+    const w = road.w * 1.25;
+    const across = 6;
     const verts: number[] = [];
+    const uvs: number[] = [];
     const index: number[] = [];
+    let along = 0;
     line.forEach(([x, z], i) => {
+      if (i) along += Math.hypot(x - line[i - 1][0], z - line[i - 1][1]);
       // Square to the path, averaged over the segments either side.
       const [ax, az] = line[Math.max(0, i - 1)];
       const [bx, bz] = line[Math.min(line.length - 1, i + 1)];
@@ -315,10 +416,11 @@ export function buildWorld(): World {
       const nx = -(bz - az) / len;
       const nz = (bx - ax) / len;
       for (let j = 0; j <= across; j++) {
-        const o = (j / across - 0.5) * road.w;
+        const o = (j / across - 0.5) * w;
         const px = x + nx * o;
         const pz = z + nz * o;
-        verts.push(px, groundY(px, pz) + 0.12, pz);
+        verts.push(px, groundY(px, pz) + 0.1, pz);
+        uvs.push(j / across, along / TRACK);
         if (i && j) {
           const a = (i - 1) * (across + 1) + j - 1;
           const b = i * (across + 1) + j - 1;
@@ -328,11 +430,13 @@ export function buildWorld(): World {
     });
     const geo = keep(new THREE.BufferGeometry());
     geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     geo.setIndex(index);
     geo.computeVertexNormals();
     // Wound either way depending on the path's direction, so the material draws both sides.
     const m = new THREE.Mesh(geo, roadMat);
     m.receiveShadow = true;
+    m.renderOrder = 1; // after the ground, which it blends onto
     m.userData.noFade = true;
     group.add(m);
   }
@@ -455,24 +559,39 @@ export function buildWorld(): World {
   const variants = [...kinds.broadleaf, kinds.broadleafLite, ...kinds.palm, kinds.palmLite];
   const planted: { p: V3; s: V3; r: V3; c: string }[][] = variants.map(() => []);
   const tints = ['#ffffff', '#e6efdc', '#f6ffe6', '#dfe5d4', '#fff2dc'];
-  function tree(x: number, z: number, scale: number, far = false) {
+  /** A tree; `far` ones (beyond the play area) use the cheap model, have no collider, and draw on `r`. */
+  function tree(x: number, z: number, scale: number, far = false, r = rand) {
     const g = groundY(x, z) - 0.2;
-    const isPalm = rand() < MAP.plants.palms;
+    const isPalm = r() < MAP.plants.palms;
     const k = isPalm ? kinds.broadleaf.length + 1 : 0;
-    const which = k + (far ? kinds.broadleaf.length : Math.floor(rand() * kinds.broadleaf.length));
+    const which = k + (far ? kinds.broadleaf.length : Math.floor(r() * kinds.broadleaf.length));
     const s = isPalm ? scale : scale * 1.05;
-    planted[which].push({ p: [x, g, z], s: [s * (0.9 + rand() * 0.2), s * (0.9 + rand() * 0.25), s * (0.9 + rand() * 0.2)], r: [0, rand() * Math.PI * 2, 0], c: pick(tints) });
-    addCollider({ x, z, r: isPalm ? 0.9 : 1.1 * scale });
+    planted[which].push({ p: [x, g, z], s: [s * (0.9 + r() * 0.2), s * (0.9 + r() * 0.25), s * (0.9 + r() * 0.2)], r: [0, r() * Math.PI * 2, 0], c: tints[Math.floor(r() * tints.length)] });
+    if (!far) addCollider({ x, z, r: isPalm ? 0.9 : 1.1 * scale });
   }
 
-  // Wall of trees around the edge.
-  for (let a = 0; a < Math.PI * 2; a += 0.018) {
-    for (const ring of [HALF + 6, HALF + 13, HALF + 21]) {
-      const rr = ring + (rand() - 0.5) * 5;
-      const x = Math.max(-HALF - 30, Math.min(HALF + 30, Math.cos(a) * rr * 1.42));
-      const z = Math.max(-HALF - 30, Math.min(HALF + 30, Math.sin(a) * rr * 1.42));
-      if (Math.max(Math.abs(x), Math.abs(z)) < HALF + 3 || z > SHORE) continue;
-      if (rand() < 0.55) tree(x, z, 1.2 + rand() * 0.4, true);
+  // Dense jungle all round outside the play area, out to the end of the ground (not on the sea side):
+  // a band of trees packed close along the edge, then a canopy of leafy masses (far cheaper than trees)
+  // with a few trees standing out of it. It has its own random numbers, so the play area's jungle
+  // doesn't move when the band changes.
+  const wild = rng(MAP.seed * 31 + 5);
+  const canopy: { p: V3; s: V3; r: V3; c: string }[] = [];
+  const darkGreens = ['#22381f', '#2a4224', '#1f3320', '#30492a', '#263d22'];
+  const EDGE = GROUND / 2;
+  const CELLW = 4.6;
+  for (let gx = -EDGE; gx < EDGE; gx += CELLW) {
+    for (let gz = -EDGE; gz < EDGE; gz += CELLW) {
+      const x = gx + wild() * CELLW;
+      const z = gz + wild() * CELLW;
+      const out = Math.max(Math.abs(x), Math.abs(z)) - HALF;
+      if (out < 3 || z > SHORE - 1) continue;
+      if (out < 22) {
+        if (wild() < 0.9) tree(x, z, 1.2 + wild() * 0.5, true, wild);
+        continue;
+      }
+      if (wild() < 0.2) tree(x, z, 1.5 + wild() * 0.5, true, wild);
+      const w = 3.6 + wild() * 1.6;
+      canopy.push({ p: [x, groundY(x, z) + 4.5 + wild() * 1.5, z], s: [w, 3.8 + wild() * 1.6, w * (0.85 + wild() * 0.3)], r: [0, wild() * 3, 0], c: darkGreens[Math.floor(wild() * darkGreens.length)] });
     }
   }
   // Scattered jungle, keeping a clearing at the start and room around the lake and volcano.
@@ -526,6 +645,7 @@ export function buildWorld(): World {
     if (!lite) detailed.push({ mesh, full: geo, lite: kinds.broadleaf.includes(geo) ? kinds.broadleafLite : kinds.palmLite });
   });
   instanced(lumpy(new THREE.IcosahedronGeometry(1, 1), 0.25, 12), lambert({ color: '#ffffff' }), bushes);
+  if (canopy.length) instanced(lumpy(new THREE.IcosahedronGeometry(1, 1), 0.3, 7), lambert({ color: '#ffffff' }), canopy, false);
   instanced(lumpy(new THREE.DodecahedronGeometry(1, 1), 0.18, 13), lambert({ color: '#ffffff', ...flat }), rocks);
   instanced(new THREE.CircleGeometry(1, 10).rotateX(-Math.PI / 2), lambert({ color: '#ffffff' }), flowers, false);
 

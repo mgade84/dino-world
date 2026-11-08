@@ -30,6 +30,8 @@ export interface Hill { pts: Pt[]; w: number; h: number }
  * sea; -1 faces -z). `style` picks its colours (STYLES in buildings.ts). A shop has a flat roof, a shed a
  * pitched one and a roller door. `hp` is how many bites wreck it (default 3).
  */
+/** A park jeep, parked at (x, z) facing `a` degrees round from +z (90 faces +x). */
+export interface CarSpot extends Spot { a: number }
 export interface House extends Spot { w: number; d: number; h: number; style: number; front: 1 | -1; kind?: 'shop' | 'shed'; hp?: number }
 
 export interface MapDef {
@@ -72,6 +74,12 @@ export interface MapDef {
   people: Spot[];
   /** Rangers' posts. Rampage, and every level that has rangers, puts a ranger at each (and more at random spots if the level wants more). */
   guards: Spot[];
+  /**
+   * Park jeeps to wreck, each with a visitor beside it to scare. Every level puts them all where they are;
+   * a level whose goals need more jeeps than the map has adds the rest at random, as does a map with none.
+   * (Optional, for map files written before there were jeeps.)
+   */
+  cars?: CarSpot[];
   /** How much grows inside the play area. `palms` is the share of trees that are palms (0–1). */
   plants: { trees: number; palms: number; bushes: number; rocks: number };
 }
