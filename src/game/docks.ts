@@ -81,10 +81,10 @@ export function createDocks(scene: THREE.Scene, rand: () => number): Docks {
   const glass = std('#22303a', 0.1, 0.4);
   const rail = std('#8a8f92', 0.4, 0.7);
   const moorings: [number, number, number][] = [
-    [PIER.x - PIER.w / 2 - HULL.beam / 2 - 0.4, 109, -1],
-    [PIER.x + PIER.w / 2 + HULL.beam / 2 + 0.4, 112, 1],
-    [PIER.x - PIER.w / 2 - HULL.beam / 2 - 0.4, 121, -1],
-    [PIER.x + PIER.w / 2 + HULL.beam / 2 + 0.4, 124, 1],
+    [PIER.x - PIER.w / 2 - HULL.beam / 2 - 0.4, SHORE + 6, -1],
+    [PIER.x + PIER.w / 2 + HULL.beam / 2 + 0.4, SHORE + 9, 1],
+    [PIER.x - PIER.w / 2 - HULL.beam / 2 - 0.4, SHORE + 18, -1],
+    [PIER.x + PIER.w / 2 + HULL.beam / 2 + 0.4, SHORE + 21, 1],
   ];
   const boats: Boat[] = moorings.map(([x, z, dir]) => {
     const g = new THREE.Group();

@@ -21,6 +21,8 @@ export interface LevelDef {
   name: Txt;
   /** Where on the island it takes place. */
   place: Txt;
+  /** The world map (an id from maps/index.ts); the default is Kessick Island. Positions below are on it. */
+  map?: string;
   /** The mission briefing, read before the level starts. */
   brief: Txt;
   /** Every goal must be met to finish the level. */

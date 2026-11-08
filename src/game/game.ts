@@ -4,7 +4,8 @@ import { ambience, noiseLoop, sfx, toneLoop } from '../engine/audio';
 import { L, UI, type Txt } from '../i18n';
 import { buildSettings } from '../settings';
 import { animate, buildDino, disposeDinoAssets, DINOS, type DinoSpec, type Rig } from './dinos';
-import { buildWorld, floorY, groundY, HALF, rng, CAGE_SPOTS, POWER, SHORE } from './world';
+import { buildWorld, floorY, groundY, HALF, MAP, rng, CAGE_SPOTS, POWER, SHORE, useMap } from './world';
+import { getMap, trialMap, type MapDef } from './maps';
 import { CAGE, CAGE_HITS, CAR_COLORS, createCage, createCar, createPerson, disposePark, knockDown, posePerson, scare, updateCar, wreckCar, type Cage, type Car, type Person } from './park';
 import { createTown, type Building } from './buildings';
 import { createFences } from './fences';
@@ -69,6 +70,8 @@ interface Captive { cage: Cage; spec: DinoSpec; rig: Rig; state: 'caged' | 'leav
 export interface RunOpts {
   /** The story level, or null for Rampage. */
   level: LevelDef | null;
+  /** Rampage: the island to play on (default: the map being tried from the editor, or the default map). */
+  map?: MapDef;
   /** Story only: the level was won or lost. */
   onEnd(result: { won: boolean; time: number }): void;
   onRestart(): void;
@@ -113,6 +116,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   sun.shadow.normalBias = 0.03;
   scene.add(sun, sun.target);
 
+  // Lay out the level's map before anything is built on it.
+  // Rampage plays on a map being tried out from the editor, if there is one.
+  useMap(level ? getMap(level.map) : opts.map ?? trialMap() ?? getMap());
   const world = buildWorld();
   scene.add(world.group);
   // Low draws the cheap tree models everywhere; Auto starts with the full ones and may step down.
@@ -481,6 +487,14 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         scene.add(person.group);
         people.push(person);
       }
+    }
+    // The map's own visitors, standing about where it puts them.
+    for (const at of MAP.people) {
+      const person = createPerson(placeRand);
+      person.group.position.set(at.x, floorY(at.x, at.z), at.z);
+      person.heading = placeRand() * Math.PI * 2;
+      scene.add(person.group);
+      people.push(person);
     }
     // Main Street has its own crowd, on the pavements, wherever buildings are a goal (and in Rampage).
     if (!level || goals.some((g) => g.kind === 'destroy')) {
@@ -925,8 +939,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   });
 
   // ---- Simulation ----
-  const camAt = new THREE.Vector3(0, 0, 6);
-  const camPos = new THREE.Vector3(0, 8, -6);
+  const camAt = new THREE.Vector3(CAGE.x, 0, CAGE.z);
+  const camPos = new THREE.Vector3(CAGE.x, 8, CAGE.z - 12);
   const fwd = new THREE.Vector3();
   const right = new THREE.Vector3();
   let camYaw = 0;
@@ -938,14 +952,21 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   /** Seconds since sedated, or 0 while awake. */
   let sedated = 0;
   let zapCool = 0;
-  const rangerCount = level ? level.rangers ?? 0 : RAMPAGE_RANGERS;
+  // A ranger at each of the map's posts (in Rampage, and in levels that have rangers), and more at random spots if the level wants more.
+  const levelRangers = level ? level.rangers ?? 0 : RAMPAGE_RANGERS;
+  const rangerCount = levelRangers > 0 ? Math.max(levelRangers, MAP.guards.length) : 0;
+  let post = 0;
+  const rangerSpot = () => {
+    const at = MAP.guards[post++];
+    return at ? new THREE.Vector3(at.x, floorY(at.x, at.z), at.z) : spotAway(6, 40);
+  };
   const hazards = rangerCount > 0 || fenceMode === 'live';
   energyEl.hidden = !hazards;
   const security = rangerCount > 0
     ? createSecurity(
         scene,
         rangerCount,
-        () => spotAway(6, 40),
+        rangerSpot,
         (q, r) => {
           world.collide(q, r);
           town.collide(q, r);

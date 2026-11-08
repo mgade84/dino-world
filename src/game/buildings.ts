@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { DOCKS, groundY, rng, TOWN } from './world';
+import { groundY, HOUSES, rng, SCALE, TOWN } from './world';
 import { bake } from './merge';
 
 /**
@@ -91,26 +91,24 @@ interface Plan {
   top?: ('ac' | 'vent' | 'tank')[];
 }
 
-/**
- * Buildings are designed in metres and drawn SCALE times bigger, to match the people (about 2.7 units
- * tall, so 1.5 units a metre). Plans give the centre in world units and the size (w, d, h) in metres.
- */
-const SCALE = 1.5;
+/** Building colours, picked by a map building's `style`. */
+export const STYLES: { wall: string; roof: string; trim: string; awning?: string; sign?: string; top: ('ac' | 'vent' | 'tank')[] }[] = [
+  { wall: '#a49c8c', roof: '#3a3734', trim: '#d2cbbd', awning: '#6b2f24', top: ['ac', 'vent'] },
+  { wall: '#8f8a80', roof: '#2f2d2b', trim: '#c4beb2', sign: '#5a2a26', top: ['tank', 'ac', 'vent'] },
+  { wall: '#b3a892', roof: '#3d3a35', trim: '#e0d7c4', awning: '#2f4a5a', top: ['ac'] },
+  { wall: '#9a9488', roof: '#33302d', trim: '#cfc8ba', awning: '#4a5a2f', top: ['vent', 'ac'] },
+  { wall: '#a39f95', roof: '#2c2a28', trim: '#d6d0c4', sign: '#6a5a2a', top: ['ac', 'ac', 'tank', 'vent'] },
+  { wall: '#ab9f8a', roof: '#3a3632', trim: '#ddd3bf', awning: '#7a5a2a', top: ['vent'] },
+  { wall: '#66726a', roof: '#6a5242', trim: '#4a524c', top: [] },
+];
 
 /**
- * Two rows of buildings facing each other across the road (their street fronts at z 74 and 86, clear of
- * the pavement and lamps), and the boat shed at the docks.
+ * The map's buildings (HOUSES in world.ts; see House in maps/types.ts), designed in metres and drawn
+ * SCALE times bigger, to match the people (about 2.7 units tall, so 1.5 units a metre): the centre is
+ * in world units and the size (w, d, h) in metres.
  */
-const PLANS: Plan[] = [
-  { x: -90, z: 69.5, w: 8, d: 6, h: 4.6, wall: '#a49c8c', roof: '#3a3734', trim: '#d2cbbd', awning: '#6b2f24', hp: 3, top: ['ac', 'vent'] },
-  { x: -75, z: 69.5, w: 10, d: 6, h: 6.8, wall: '#8f8a80', roof: '#2f2d2b', trim: '#c4beb2', sign: '#5a2a26', hp: 4, top: ['tank', 'ac', 'vent'] },
-  { x: -60, z: 69.5, w: 8, d: 6, h: 4.4, wall: '#b3a892', roof: '#3d3a35', trim: '#e0d7c4', awning: '#2f4a5a', hp: 3, top: ['ac'] },
-  { x: -90.75, z: 90.5, w: 9, d: 6, h: 5.2, wall: '#9a9488', roof: '#33302d', trim: '#cfc8ba', awning: '#4a5a2f', hp: 3, top: ['vent', 'ac'] },
-  { x: -73.5, z: 90.5, w: 12, d: 6, h: 7.4, wall: '#a39f95', roof: '#2c2a28', trim: '#d6d0c4', sign: '#6a5a2a', hp: 5, top: ['ac', 'ac', 'tank', 'vent'] },
-  { x: -57.75, z: 90.5, w: 7, d: 6, h: 4.2, wall: '#ab9f8a', roof: '#3a3632', trim: '#ddd3bf', awning: '#7a5a2a', hp: 3, top: ['vent'] },
-  // The boat shed on the docks' landing, its roller door facing the sea.
-  { x: DOCKS.x - 9, z: DOCKS.z - 1.5, w: 8, d: 6, h: 4, wall: '#66726a', roof: '#6a5242', trim: '#4a524c', hp: 3, front: 1, kind: 'shed' },
-];
+const plans = (): Plan[] =>
+  HOUSES.map((b) => ({ ...STYLES[((b.style % STYLES.length) + STYLES.length) % STYLES.length], x: b.x, z: b.z, w: b.w, d: b.d, h: b.h, hp: b.hp ?? 3, front: b.front, kind: b.kind }));
 
 const GRAVITY = 30;
 /** The most of a building's pieces that can be torn out: what's left always stands. */
@@ -448,7 +446,7 @@ export function createTown(scene: THREE.Scene): Town {
     for (let k = 0; k < 2; k++) put(rings, ring, mat(k ? '#c9c6bd' : '#b8452a'), [1, 1, 1], [-0.5 + k * 0.9, 1.6, 0]);
   }
 
-  const buildings: Building[] = PLANS.map((p, index) => {
+  const buildings: Building[] = plans().map((p, index) => {
     const rand = rng(31 + index * 17);
     const shed = p.kind === 'shed';
     const group = new THREE.Group();

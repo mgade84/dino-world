@@ -3,6 +3,8 @@ import { sfx } from '../engine/audio';
 import { L } from '../i18n';
 import { LEVELS, type Goal, type LevelDef } from './levels';
 import { completeLevel, levelOpen, levelsDone } from './progress';
+import { MAPS, trialMap, type MapDef } from './maps';
+import { mapThumb } from './mapthumb';
 import { clock, S } from './strings';
 import './dino.css';
 
@@ -26,7 +28,7 @@ function goalText(g: Goal) {
   }
 }
 
-/** Story: level select → briefing → level → debrief. Rampage: straight onto the island. */
+/** Story: level select → briefing → level → debrief. Rampage: pick an island, then straight onto it. */
 export const dino: GameDef = {
   id: 'dino',
   title: { en: 'Dino World', da: 'Dinoverden' },
@@ -77,6 +79,23 @@ export const dino: GameDef = {
         if (!b || b.disabled) return;
         sfx.tap();
         brief(Number(b.dataset.i));
+      });
+    }
+
+    /** Rampage: every map in src/game/maps/, as a card with a sketch of the island. */
+    function mapSelect() {
+      stopRun();
+      const cards = MAPS.map((m, i) => `
+        <button class="dn-map" data-m="${i}">
+          ${mapThumb(m)}
+          <span class="dn-level-text"><b>${L(m.name)}</b><small>${S().mapSub(m.cages.length + 1, m.buildings.length)}</small></span>
+        </button>`).join('');
+      const el = show('dn-levels dn-maps', `<div class="dn-panel"><h2>${S().chooseMap}</h2><div class="dn-map-list">${cards}</div></div>`);
+      el.addEventListener('click', (e) => {
+        const b = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-m]');
+        if (!b) return;
+        sfx.tap();
+        play(null, -1, MAPS[Number(b.dataset.m)]);
       });
     }
 
@@ -133,7 +152,7 @@ export const dino: GameDef = {
       });
     }
 
-    function play(lv: LevelDef | null, i: number) {
+    function play(lv: LevelDef | null, i: number, map?: MapDef) {
       closeScreen();
       stopRun();
       loading.textContent = S().loading;
@@ -144,9 +163,10 @@ export const dino: GameDef = {
           loading.remove();
           cleanup = run(ctx, {
             level: lv,
+            map,
             onEnd: ({ won, time }) => debrief(i, won, time),
-            onRestart: () => play(lv, i),
-            onQuit: () => (lv ? levelSelect() : ctx.exit()),
+            onRestart: () => play(lv, i, map),
+            onQuit: () => (lv ? levelSelect() : map ? mapSelect() : ctx.exit()),
           });
         })
         .catch((err) => {
@@ -155,7 +175,8 @@ export const dino: GameDef = {
         });
     }
 
-    if (mode === 'rampage') play(null, -1);
+    // A map being tried from the editor skips the picker (game.ts plays it).
+    if (mode === 'rampage') trialMap() ? play(null, -1) : mapSelect();
     else levelSelect();
 
     return () => {

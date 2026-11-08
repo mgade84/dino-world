@@ -840,3 +840,50 @@
 @keyframes dn-score {
   40% { color: var(--accent); }
 }
+
+/* Rampage map picker */
+.dn-maps .dn-panel {
+  width: min(900px, 100%);
+}
+
+.dn-map-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.dn-map {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 10px 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border-top: 3px solid var(--accent);
+  text-align: left;
+  transition: background 0.12s, transform 0.12s;
+}
+
+.dn-thumb {
+  position: relative;
+  display: block;
+  padding-bottom: 100%; /* square (aspect-ratio needs Safari 15) */
+}
+
+.dn-thumb svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.dn-map:active {
+  transform: scale(0.98);
+  background: rgba(200, 64, 30, 0.3);
+}
+
+@media (hover: hover) {
+  .dn-map:hover {
+    background: rgba(200, 64, 30, 0.2);
+  }
+}

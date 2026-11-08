@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { groundY } from './world';
+import { groundY, PADDOCK } from './world';
 import { bake } from './merge';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
@@ -24,7 +24,17 @@ function carProfile(pts: ([number, number] | ['arc', number])[], width: number, 
 }
 
 /** The player's cage: centred on the start, big enough for a Brachiosaurus, too tall to jump out of. All cages share its size. */
-export const CAGE = { x: 0, z: 6, half: 7, height: 9 };
+/** The hero's paddock: where it stands comes from the map (PADDOCK in world.ts). */
+export const CAGE = {
+  get x() {
+    return PADDOCK.x;
+  },
+  get z() {
+    return PADDOCK.z;
+  },
+  half: 7,
+  height: 9,
+};
 /** Bumps a side takes before its bars bend far enough to squeeze through. */
 export const CAGE_HITS = 3;
 

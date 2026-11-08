@@ -3,6 +3,7 @@ import { dino } from './game';
 import { mountSplash } from './splash';
 import { mountSettings } from './settings';
 import { mountGame } from './shell';
+import { drafts, MAPS, setTrial } from './game/maps';
 import { unlockAudio } from './engine/audio';
 
 const app = document.getElementById('app')!;
@@ -28,6 +29,27 @@ function route() {
   const go = (to: string) => () => (location.hash = '#/' + to);
   if (id === 'settings') unmount = mountSettings(app, home, route);
   else if (id === 'story' || id === 'rampage') unmount = mountGame(app, dino, id, home);
+  else if (id.startsWith('rampage/try/')) {
+    // Rampage on a map from the editor, as it stands (unsaved changes and all); leaving goes back to the editor.
+    const mapId = id.slice('rampage/try/'.length);
+    setTrial(drafts()[mapId] ?? MAPS.find((m) => m.id === mapId) ?? null);
+    const close = mountGame(app, dino, 'rampage', go('map/' + mapId));
+    unmount = () => {
+      close();
+      setTrial(null);
+    };
+  } else if (id === 'map' || id.startsWith('map/')) {
+    // The map editor (src/game/maps/); it loads Three.js, so it loads lazily.
+    let gone = false;
+    let close: (() => void) | null = null;
+    import('./game/mapedit').then((m) => {
+      if (!gone) close = m.mountMapEditor(app, id.split('/')[1] || undefined);
+    });
+    unmount = () => {
+      gone = true;
+      close?.();
+    };
+  }
   else unmount = mountSplash(app, dino, { story: go('story'), rampage: go('rampage'), settings: go('settings') });
 }
 
