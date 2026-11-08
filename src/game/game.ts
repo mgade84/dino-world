@@ -23,7 +23,6 @@ import './dino.css';
 
 /** Jeeps (each with a person beside it) in Rampage on a map without any, respawned once all are wrecked and scared. */
 const RAMPAGE_TARGETS = 10;
-const NPCS = 6;
 /** Rampage: rangers on the island. */
 const RAMPAGE_RANGERS = 4;
 /** Rampage scoring: points per kind of mayhem, the combo window and cap, and how often reinforcements come. */
@@ -425,16 +424,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     progress('free');
   }
 
-  // ---- Baby dinosaurs wandering about ----
-  const npcs: Npc[] = Array.from({ length: NPCS }, (_, i) => {
-    const r = buildDino(DINOS[i % DINOS.length]);
-    const s = 0.5 + placeRand() * 0.3;
-    r.root.scale.setScalar(s);
-    r.radius *= s;
-    r.root.position.copy(spotAway(4, 20));
-    scene.add(r.root);
-    return { rig: r, target: r.root.position.clone(), wait: placeRand() * 3, speed: 3 + placeRand() * 2, flee: 0, heading: placeRand() * 6, vel: new THREE.Vector3(), stuck: 0 };
-  });
+  // ---- Dinosaurs roaming the park: only the ones broken out of their cages (see updateCaptive) ----
+  const npcs: Npc[] = [];
 
   // ---- Jeeps to smash and visitors to scare, one visitor beside each jeep ----
   let cars: Car[] = [];
