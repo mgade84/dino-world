@@ -37,6 +37,8 @@ function paintedMaterial(key: string, like: Plain) {
       const s = like as THREE.MeshStandardMaterial;
       m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: Math.round(s.roughness * 5) / 5, metalness: Math.round(s.metalness * 2) / 2, flatShading: s.flatShading });
     } else m = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: like.flatShading });
+    // Shared by every baked model: seethrough.ts gives objects that never fade their own copy.
+    m.userData.shared = true;
     painted.set(key, m);
   }
   return m;

@@ -10,8 +10,10 @@ import * as THREE from 'three';
  * sorting, no extra draw calls, shared and instanced materials just work), and the dither reads as
  * transparency. Anything very close to the camera thins out too, so the camera can sit in a tree.
  *
- * Objects marked `userData.noFade` (and everything under them) are left alone, and so are their
- * materials wherever else they are used: the dinosaurs, the ground, water and roads.
+ * Objects marked `userData.noFade` (and everything under them) are left alone: the dinosaurs, the
+ * ground, water and roads, and their materials wherever else they're used, except bake()'s shared
+ * vertex-colour materials (`userData.shared`, used by nearly every model): those objects get private
+ * copies of them instead, so the shared originals still fade everywhere else.
  */
 
 /** How much of an occluder's pixels disappear at full strength (0.7 leaves it about 30% there). */
@@ -84,7 +86,29 @@ export interface SeeThrough {
 
 export function createSeeThrough(scene: THREE.Scene, camera: THREE.PerspectiveCamera, renderer: THREE.WebGLRenderer): SeeThrough {
   const patched = new Map<Patchable, Patchable['onBeforeCompile']>();
+  /** Private copies of materials for objects that never fade, by the original they replace. */
+  const privates = new Map<THREE.Material, THREE.Material>();
+  const copies = new Set<THREE.Material>();
+  /** Materials of objects that never fade (not shared ones: those get copies). */
   const blocked = new Set<THREE.Material>();
+  /** The material's own onBeforeCompile, before any patch of ours. */
+  const unpatched = (m: THREE.Material) => (patched.get(m as Patchable) ?? m.onBeforeCompile) as THREE.Material['onBeforeCompile'];
+  function privateCopy(m: THREE.Material) {
+    if (copies.has(m)) return m;
+    // Only bake()'s shared materials need copying; others (like the pulsing arrow) are just left alone.
+    if (!m.userData.shared) {
+      blocked.add(m);
+      return m;
+    }
+    let c = privates.get(m);
+    if (!c) {
+      c = m.clone();
+      c.onBeforeCompile = unpatched(m);
+      privates.set(m, c);
+      copies.add(c);
+    }
+    return c;
+  }
   const each = (o: THREE.Object3D, fn: (m: THREE.Material) => void) => {
     const mat = (o as THREE.Mesh).material;
     if (!mat || !(o as THREE.Mesh).isMesh) return;
@@ -96,14 +120,19 @@ export function createSeeThrough(scene: THREE.Scene, camera: THREE.PerspectiveCa
     const fade: THREE.Object3D[] = [];
     const walk = (o: THREE.Object3D, off: boolean) => {
       const skip = off || !!o.userData.noFade;
-      if (skip) each(o, (m) => blocked.add(m));
-      else fade.push(o);
+      if (skip) {
+        // Never thinned: swap to private copies (they keep the textures; only the shader differs).
+        const mesh = o as THREE.Mesh;
+        if (mesh.isMesh && mesh.material) {
+          mesh.material = Array.isArray(mesh.material) ? mesh.material.map(privateCopy) : privateCopy(mesh.material);
+        }
+      } else fade.push(o);
       for (const c of o.children) walk(c, skip);
     };
     walk(scene, false);
     for (const o of fade) {
       each(o, (m) => {
-        if (blocked.has(m) || !isPatchable(m) || patched.has(m)) return;
+        if (copies.has(m) || blocked.has(m) || !isPatchable(m) || patched.has(m)) return;
         patched.set(m, m.onBeforeCompile);
         const before = m.onBeforeCompile;
         m.onBeforeCompile = (shader, r) => {
@@ -155,7 +184,7 @@ export function createSeeThrough(scene: THREE.Scene, camera: THREE.PerspectiveCa
         toPixels(feet, b).distanceTo(c),
         toPixels(side, a).distanceTo(c),
       );
-      u.uSeeRadius.value = Math.max(40, r * 1.3);
+      u.uSeeRadius.value = Math.max(60, r * 1.7);
     },
     dispose() {
       uniforms.uSeeAmount.value = 0;
@@ -165,6 +194,10 @@ export function createSeeThrough(scene: THREE.Scene, camera: THREE.PerspectiveCa
         m.needsUpdate = true;
       }
       patched.clear();
+      // The private copies go with the level's objects (their textures belong to the originals).
+      for (const c of copies) c.dispose();
+      privates.clear();
+      copies.clear();
       blocked.clear();
     },
   };

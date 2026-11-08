@@ -31,7 +31,7 @@ const en = {
   sound: 'Sound on/off',
   language: 'Language',
   settings: 'Settings',
-  hold: 'Hold for 3 seconds',
+  close: 'Close settings',
   soundLabel: 'Sound',
   graphics: 'Graphics',
   graphicsHint: 'Auto lowers the detail when the game runs slowly',
@@ -48,6 +48,7 @@ const en = {
   progressHint: (done: number, total: number) => `Levels completed: ${done} of ${total}`,
   resetProgress: 'Reset progress',
   sure: 'Tap again to reset',
+  nextLevel: 'Graphics and language changes take effect from the next level. Story progress can be reset from the title screen.',
 };
 
 /** Shell, splash and settings strings. Games keep their own tables next to their code. */
@@ -58,7 +59,7 @@ export const UI: Record<Lang, typeof en> = {
     sound: 'Lyd til/fra',
     language: 'Sprog',
     settings: 'Indstillinger',
-    hold: 'Hold inde i 3 sekunder',
+    close: 'Luk indstillinger',
     soundLabel: 'Lyd',
     graphics: 'Grafik',
     graphicsHint: 'Auto sænker detaljerne, når spillet kører langsomt',
@@ -75,5 +76,6 @@ export const UI: Record<Lang, typeof en> = {
     progressHint: (done: number, total: number) => `Gennemførte baner: ${done} af ${total}`,
     resetProgress: 'Nulstil',
     sure: 'Tryk igen for at nulstille',
+    nextLevel: 'Ændringer i grafik og sprog gælder fra næste bane. Historien kan nulstilles fra titelskærmen.',
   },
 };

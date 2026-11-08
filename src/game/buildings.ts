@@ -6,8 +6,11 @@ import { bake } from './merge';
  * Main Street's buildings (and the boat shed at the docks), each made of pre-broken pieces: wall
  * panels with everything fixed to them (plinth, trim, window frames and sills, signs, awnings,
  * drainpipes, gables) and roof slabs with what stands on them (air-conditioning units, vents, a water
- * tank). A charging dinosaur knocks pieces loose; enough hits and the whole building comes down into
- * rubble, in a cloud of dust. Rubble doesn't block anything.
+ * tank). Inside, every floor has a slab, a partition into a front and a back room, ceiling lights and
+ * furniture: shops, a café and a lobby at street level with storerooms behind, offices and flats
+ * upstairs, and a launch on its trailer in the boat shed. A dinosaur biting into a building tears out the pieces nearest its jaws, which drop to the
+ * ground as rubble (rubble doesn't block anything). Enough bites and the building counts as wrecked,
+ * but it never comes down: at most MAX_TORN of it can be torn away, and a charge only shakes it.
  *
  * Each piece is baked to a mesh or two (merge.ts), and an undamaged building is drawn as one merged
  * mesh per kind of surface; it swaps to its separate pieces on the first hit.
@@ -23,6 +26,8 @@ interface Chunk {
   resting: boolean;
   /** Half its thickness, to rest on the ground. */
   half: number;
+  /** Part of the structure (floor slabs): never torn out. */
+  fixed: boolean;
 }
 
 export interface Building {
@@ -33,7 +38,8 @@ export interface Building {
   maxZ: number;
   height: number;
   hp: number;
-  state: 'standing' | 'rubble';
+  /** Wrecked once it has taken `hp` bites; it still stands (and blocks) either way. */
+  state: 'standing' | 'wrecked';
   chunks: Chunk[];
   /** While undamaged, the whole building is drawn as a few merged meshes and the chunks are hidden. */
   intact: THREE.Group | null;
@@ -47,8 +53,13 @@ export interface Town {
   buildings: Building[];
   /** Keeps a circle out of standing buildings. Returns the building it pushed against, or null. */
   collide(p: THREE.Vector3, r: number, vel?: THREE.Vector3): Building | null;
-  /** A hit from `from` (the dinosaur). Knocks panels loose; true if this brought the building down. */
-  hit(b: Building, from: THREE.Vector3): boolean;
+  /**
+   * A bite with the jaws at `jaw` (world space): tears out the pieces nearest it. 'wrecked' when this
+   * bite wrecked the building, 'bitten' when it took a mouthful, 'solid' when nothing more comes away.
+   */
+  bite(b: Building, jaw: THREE.Vector3): 'wrecked' | 'bitten' | 'solid';
+  /** A charge into it: the building shakes and sheds a little dust, but nothing comes away. */
+  bump(b: Building, from: THREE.Vector3): boolean;
   /** Street lamps and lit windows on or off (they go out in the blackout). */
   setLights(on: boolean): void;
   /** Spots on the pavement in front of the buildings, for people to stand. */
@@ -80,19 +91,30 @@ interface Plan {
   top?: ('ac' | 'vent' | 'tank')[];
 }
 
-/** Two rows of buildings facing each other across the road, and the boat shed at the docks. */
+/**
+ * Buildings are designed in metres and drawn SCALE times bigger, to match the people (about 2.7 units
+ * tall, so 1.5 units a metre). Plans give the centre in world units and the size (w, d, h) in metres.
+ */
+const SCALE = 1.5;
+
+/**
+ * Two rows of buildings facing each other across the road (their street fronts at z 74 and 86, clear of
+ * the pavement and lamps), and the boat shed at the docks.
+ */
 const PLANS: Plan[] = [
-  { x: -92, z: 70.5, w: 9, d: 7, h: 4.6, wall: '#a49c8c', roof: '#3a3734', trim: '#d2cbbd', awning: '#6b2f24', hp: 3, top: ['ac', 'vent'] },
-  { x: -79, z: 70, w: 11, d: 8, h: 6.8, wall: '#8f8a80', roof: '#2f2d2b', trim: '#c4beb2', sign: '#5a2a26', hp: 4, top: ['tank', 'ac', 'vent'] },
-  { x: -65, z: 70.5, w: 9, d: 7, h: 4.4, wall: '#b3a892', roof: '#3d3a35', trim: '#e0d7c4', awning: '#2f4a5a', hp: 3, top: ['ac'] },
-  { x: -90, z: 89.5, w: 10, d: 7, h: 5.2, wall: '#9a9488', roof: '#33302d', trim: '#cfc8ba', awning: '#4a5a2f', hp: 3, top: ['vent', 'ac'] },
-  { x: -73, z: 90, w: 14, d: 8, h: 7.4, wall: '#a39f95', roof: '#2c2a28', trim: '#d6d0c4', sign: '#6a5a2a', hp: 5, top: ['ac', 'ac', 'tank', 'vent'] },
-  { x: -58, z: 89.5, w: 8, d: 6, h: 4.2, wall: '#ab9f8a', roof: '#3a3632', trim: '#ddd3bf', awning: '#7a5a2a', hp: 3, top: ['vent'] },
+  { x: -90, z: 69.5, w: 8, d: 6, h: 4.6, wall: '#a49c8c', roof: '#3a3734', trim: '#d2cbbd', awning: '#6b2f24', hp: 3, top: ['ac', 'vent'] },
+  { x: -75, z: 69.5, w: 10, d: 6, h: 6.8, wall: '#8f8a80', roof: '#2f2d2b', trim: '#c4beb2', sign: '#5a2a26', hp: 4, top: ['tank', 'ac', 'vent'] },
+  { x: -60, z: 69.5, w: 8, d: 6, h: 4.4, wall: '#b3a892', roof: '#3d3a35', trim: '#e0d7c4', awning: '#2f4a5a', hp: 3, top: ['ac'] },
+  { x: -90.75, z: 90.5, w: 9, d: 6, h: 5.2, wall: '#9a9488', roof: '#33302d', trim: '#cfc8ba', awning: '#4a5a2f', hp: 3, top: ['vent', 'ac'] },
+  { x: -73.5, z: 90.5, w: 12, d: 6, h: 7.4, wall: '#a39f95', roof: '#2c2a28', trim: '#d6d0c4', sign: '#6a5a2a', hp: 5, top: ['ac', 'ac', 'tank', 'vent'] },
+  { x: -57.75, z: 90.5, w: 7, d: 6, h: 4.2, wall: '#ab9f8a', roof: '#3a3632', trim: '#ddd3bf', awning: '#7a5a2a', hp: 3, top: ['vent'] },
   // The boat shed on the docks' landing, its roller door facing the sea.
-  { x: DOCKS.x - 10, z: DOCKS.z - 1, w: 8, d: 6, h: 4, wall: '#66726a', roof: '#6a5242', trim: '#4a524c', hp: 3, front: 1, kind: 'shed' },
+  { x: DOCKS.x - 9, z: DOCKS.z - 1.5, w: 8, d: 6, h: 4, wall: '#66726a', roof: '#6a5242', trim: '#4a524c', hp: 3, front: 1, kind: 'shed' },
 ];
 
 const GRAVITY = 30;
+/** The most of a building's pieces that can be torn out: what's left always stands. */
+const MAX_TORN = 0.45;
 /** Wall thickness. */
 const PANEL = 0.35;
 /** How far a shop's parapet stands above its flat roof. */
@@ -116,7 +138,8 @@ export function createTown(scene: THREE.Scene): Town {
   };
   /** A colour darkened or lightened by `k`, in steps of 2% so the material cache stays small. */
   const shade = (color: string, k: number) => '#' + new THREE.Color(color).multiplyScalar(Math.round(k * 50) / 50).getHexString();
-  const glass = mat('#1e2a30', 0.1, 0.5);
+  // Window glass you can see into the rooms through.
+  const glass = keep(new THREE.MeshStandardMaterial({ color: '#2a3a42', roughness: 0.05, metalness: 0.3, transparent: true, opacity: 0.42, depthWrite: false }));
   // Lit windows: warm light behind the glass, put out in the blackout (setLights).
   const litGlass = keep(new THREE.MeshStandardMaterial({ color: '#2a2a24', roughness: 0.1, metalness: 0.5, emissive: '#ffc977', emissiveIntensity: 0.9 }));
   litGlass.userData.dynamic = true;
@@ -141,11 +164,11 @@ export function createTown(scene: THREE.Scene): Town {
   }
 
   /** A new piece of `b`, centred at `at` (building space). Fill it, then call done(). */
-  function piece(b: Building, at: V3, half: number) {
+  function piece(b: Building, at: V3, half: number, fixed = false) {
     const obj = new THREE.Group();
     obj.position.set(...at);
     b.group.add(obj);
-    b.chunks.push({ obj, vel: new THREE.Vector3(), spin: new THREE.Vector3(), loose: false, resting: false, half });
+    b.chunks.push({ obj, vel: new THREE.Vector3(), spin: new THREE.Vector3(), loose: false, resting: false, half: half * SCALE, fixed });
     return obj;
   }
 
@@ -186,16 +209,258 @@ export function createTown(scene: THREE.Scene): Town {
     for (const s of [-1, 1]) put(f, box, darkMetal, [0.04, 0.04, len * 1.02], [s * (width / 2 - 0.05), top - (len / 2) * Math.sin(tilt) - 0.05, PANEL / 2 + (len / 2) * Math.cos(tilt)], [tilt, 0, 0]);
   }
 
+  // ---- Interiors ----
+  // Every floor has a slab, a partition with a doorway splitting it into a front and a back room, and
+  // ceiling lights (on the lit-window material, so they go out in the blackout). Furniture stands in
+  // pieces of its own, so a bite can drag a desk or a shelf out through the hole it made. Slabs never
+  // come away: the building keeps its floors however much is torn out of it.
+  const wood = mat('#6b4f36');
+  const darkWood = mat('#4a3626');
+  const paleWood = mat('#9a7b58');
+  const plaster = mat('#c9c2b2');
+  const tile = mat('#8f8a80');
+  const black = mat('#232526');
+  const offWhite = mat('#d9d6cf');
+  const green = mat('#3f5a34');
+  const FABRIC = ['#5a6470', '#6e5a4a', '#4f5e4a', '#7a6a52', '#3f4a5a', '#6a4a4a'];
+  const GOODS = ['#a33a2a', '#2f5f8a', '#c9a23a', '#4f7a3a', '#8a8a82', '#d0c8b0', '#6a4a7a'];
+  const ring = keep(new THREE.TorusGeometry(0.32, 0.07, 6, 14));
+
+  interface Room { b: Building; front: number; y: number; w: number; d: number; vc: number; h: number; rand: () => number }
+  /** A piece standing in `room` at room-local (x, z), where +z points to the street; turned by `turn`. */
+  function item(room: Room, x: number, z: number, turn = 0, half = 0.3) {
+    const obj = piece(room.b, [room.front > 0 ? x : -x, room.y, room.front * (room.vc + z)], half);
+    obj.rotation.y = (room.front > 0 ? 0 : Math.PI) + turn;
+    return obj;
+  }
+  const pick = <T,>(r: () => number, list: T[]) => list[Math.floor(r() * list.length)];
+
+  function table(o: THREE.Object3D, w: number, d: number, h: number, top: THREE.Material, legs = darkWood, z = 0) {
+    put(o, box, top, [w, 0.05, d], [0, h - 0.025, z]);
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) put(o, box, legs, [0.05, h - 0.05, 0.05], [sx * (w / 2 - 0.06), (h - 0.05) / 2, z + sz * (d / 2 - 0.06)]);
+  }
+  /** A chair facing +z (its back on the -z side), at (x, z) in `o`, turned by `turn`. */
+  function chair(o: THREE.Object3D, x: number, z: number, turn: number, seat: THREE.Material) {
+    const c = new THREE.Group();
+    c.position.set(x, 0, z);
+    c.rotation.y = turn;
+    o.add(c);
+    put(c, box, seat, [0.44, 0.06, 0.44], [0, 0.45, 0]);
+    put(c, box, seat, [0.44, 0.45, 0.05], [0, 0.7, -0.2]);
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) put(c, box, black, [0.04, 0.42, 0.04], [sx * 0.19, 0.21, sz * 0.19]);
+  }
+  /** Shelves `w` long and `d` deep against a wall behind them (-z), with goods on each board. */
+  function shelves(o: THREE.Object3D, r: () => number, w: number, d: number, h: number, frame: THREE.Material, boards: number) {
+    for (const s of [-1, 1]) put(o, box, frame, [0.04, h, d], [s * (w / 2 - 0.02), h / 2, 0]);
+    put(o, box, frame, [w, h, 0.02], [0, h / 2, -d / 2 + 0.01]);
+    for (let k = 0; k < boards; k++) {
+      const y = 0.12 + (k * (h - 0.2)) / (boards - 1);
+      put(o, box, frame, [w - 0.06, 0.03, d], [0, y, 0]);
+      if (k === boards - 1) break;
+      // Goods: a row of boxes and tins of different sizes.
+      for (let x = -w / 2 + 0.12; x < w / 2 - 0.15; ) {
+        const gw = 0.12 + r() * 0.22;
+        const gh = Math.min(0.12 + r() * 0.25, (h - 0.2) / (boards - 1) - 0.06);
+        if (r() < 0.85) put(o, box, mat(pick(r, GOODS)), [gw, gh, d * (0.5 + r() * 0.3)], [x + gw / 2, y + 0.015 + gh / 2, 0]);
+        x += gw + 0.03;
+      }
+    }
+  }
+  function plant(o: THREE.Object3D, x: number, z: number, h: number) {
+    put(o, cyl, mat('#6a4a36'), [0.18, 0.35, 0.18], [x, 0.175, z]);
+    for (let k = 0; k < 4; k++) {
+      const a = (k / 4) * Math.PI * 2;
+      put(o, box, green, [0.12, h, 0.3], [x + Math.cos(a) * 0.08, 0.35 + h / 2, z + Math.sin(a) * 0.08], [0.25 * Math.sin(a), a, 0.25 * Math.cos(a)]);
+    }
+  }
+
+  /** What goes in a room. Room-local: x across (-w/2..w/2), z from the back (-d/2) to the street side (d/2). */
+  type RoomKind = 'shop' | 'cafe' | 'lobby' | 'store' | 'office' | 'flat';
+  function furnish(room: Room, kind: RoomKind) {
+    const { w, d, h, rand: r } = room;
+    const tall = Math.min(2, h - 0.35);
+    if (kind === 'shop') {
+      // Shelving down both side walls, a counter at the back with a till, and a display table.
+      const len = Math.min(d - 1.4, 4);
+      for (const s of [-1, 1]) shelves(item(room, s * (w / 2 - 0.25), 0.1, -s * Math.PI / 2), r, len, 0.45, tall, wood, 4);
+      const cw = Math.min(2.4, w * 0.4);
+      const counter = item(room, w * 0.15, -d / 2 + 0.9);
+      put(counter, box, darkWood, [cw, 0.95, 0.6], [0, 0.475, 0]);
+      put(counter, box, paleWood, [cw + 0.1, 0.05, 0.7], [0, 0.975, 0]);
+      put(counter, box, black, [0.35, 0.22, 0.3], [cw * 0.3, 1.11, 0]);
+      put(counter, box, black, [0.3, 0.2, 0.04], [cw * 0.3, 1.3, -0.08], [-0.4, 0, 0]);
+      const disp = item(room, -w * 0.1, d * 0.12);
+      table(disp, 1.4, 0.9, 0.8, paleWood);
+      for (let k = 0; k < 6; k++) put(disp, box, mat(pick(r, GOODS)), [0.2 + r() * 0.2, 0.08 + r() * 0.18, 0.2 + r() * 0.15], [-0.5 + (k % 3) * 0.5, 0.88, k < 3 ? -0.2 : 0.2]);
+    } else if (kind === 'cafe') {
+      // Small round tables with chairs, and a counter with a coffee machine at the back.
+      const cols = Math.max(1, Math.floor((w - 1) / 2.2));
+      for (let i = 0; i < cols; i++) for (const z of [d * 0.22, -d * 0.12]) {
+        if (z < -d / 2 + 2) continue;
+        const t = item(room, -w / 2 + 1.1 + ((w - 2.2) * (i + 0.5)) / cols, z);
+        put(t, cyl, offWhite, [0.45, 0.04, 0.45], [0, 0.74, 0]);
+        put(t, cyl, black, [0.04, 0.72, 0.04], [0, 0.36, 0]);
+        put(t, cyl, black, [0.25, 0.03, 0.25], [0, 0.015, 0]);
+        const seat = mat(pick(r, FABRIC));
+        chair(t, -0.65, 0, Math.PI / 2, seat);
+        chair(t, 0.65, 0, -Math.PI / 2, seat);
+        if (r() < 0.6) put(t, cyl, offWhite, [0.05, 0.09, 0.05], [0.1, 0.81, 0.05]);
+      }
+      const counter = item(room, 0, -d / 2 + 0.7);
+      const cw = Math.min(3, w * 0.6);
+      put(counter, box, darkWood, [cw, 0.95, 0.6], [0, 0.475, 0]);
+      put(counter, box, tile, [cw + 0.1, 0.05, 0.7], [0, 0.975, 0]);
+      put(counter, box, metal, [0.5, 0.45, 0.4], [-cw * 0.3, 1.225, -0.05]);
+      put(counter, box, black, [0.42, 0.1, 0.1], [-cw * 0.3, 1.2, 0.17]);
+      for (let k = 0; k < 4; k++) put(counter, cyl, offWhite, [0.05, 0.1, 0.05], [cw * 0.1 + k * 0.14, 1.05, 0.1]);
+      put(counter, box, black, [Math.min(1.6, cw * 0.6), 0.6, 0.04], [cw * 0.15, Math.min(h - 0.5, 2), -0.32]);
+    } else if (kind === 'lobby') {
+      // A reception desk, a row of waiting chairs and two plants.
+      const desk = item(room, 0, -d / 2 + 1.3);
+      const dw = Math.min(3, w * 0.45);
+      put(desk, box, paleWood, [dw, 1.05, 0.5], [0, 0.525, 0.1]);
+      put(desk, box, darkWood, [dw - 0.2, 0.75, 0.6], [0, 0.375, -0.35]);
+      put(desk, box, black, [0.5, 0.32, 0.04], [dw * 0.25, 0.94, -0.3]);
+      chair(desk, dw * 0.25, -0.95, 0, mat('#3a3a3a'));
+      const row = item(room, w / 2 - 0.4, 0, -Math.PI / 2);
+      const seat = mat(pick(r, FABRIC));
+      for (let k = 0; k < 4; k++) chair(row, -1.05 + k * 0.7, 0, 0, seat);
+      const plants = item(room, -w / 2 + 0.5, d / 2 - 0.6);
+      plant(plants, 0, 0, 0.9);
+    } else if (kind === 'store') {
+      // Steel shelving along the back wall, and stacked crates and boxes.
+      const n = Math.max(1, Math.floor((w - 1) / 2.2));
+      for (let i = 0; i < n; i++) shelves(item(room, -w / 2 + 1.1 + ((w - 2.2) * (i + 0.5)) / n, -d / 2 + 0.3), r, 1.9, 0.5, tall, darkMetal, 4);
+      const stack = item(room, w * 0.2, d * 0.1);
+      for (let k = 0; k < 5; k++) {
+        const s = 0.5 + r() * 0.2;
+        put(stack, box, mat(pick(r, ['#8a6a44', '#7a5e3a', '#9a7a50'])), [s, s * 0.8, s], [(k % 2) * 0.65 - 0.3, s * 0.4 + (k > 2 ? 0.6 : 0), Math.floor(k / 2) * 0.5 - 0.3], [0, r() * 0.4, 0]);
+      }
+    } else if (kind === 'office') {
+      // Desks with monitors and chairs, a filing cabinet, and a whiteboard on the back wall.
+      const n = Math.max(1, Math.min(4, Math.floor((w - 1) / 1.9)));
+      for (let i = 0; i < n; i++) {
+        const desk = item(room, -w / 2 + 1 + ((w - 2) * (i + 0.5)) / n, 0.2);
+        table(desk, 1.4, 0.7, 0.75, paleWood, metal);
+        put(desk, box, black, [0.55, 0.34, 0.04], [0, 1.0, -0.15]);
+        put(desk, box, black, [0.06, 0.2, 0.06], [0, 0.82, -0.18]);
+        put(desk, box, mat('#3a3a3a'), [0.45, 0.02, 0.15], [0, 0.76, 0.1]);
+        if (r() < 0.6) put(desk, box, offWhite, [0.22, 0.02, 0.3], [0.45, 0.76, 0.05], [0, r(), 0]);
+        chair(desk, 0, 0.65, Math.PI, mat('#2e3238'));
+      }
+      const cab = item(room, w / 2 - 0.4, -d / 2 + 0.4);
+      put(cab, box, mat('#6a6e70', 0.5, 0.5), [0.5, 1.3, 0.6], [0, 0.65, 0]);
+      for (let k = 0; k < 4; k++) put(cab, box, darkMetal, [0.15, 0.03, 0.02], [0, 0.25 + k * 0.32, 0.31]);
+      const board = item(room, -w * 0.15, -d / 2 + 0.05, 0, 0.1);
+      put(board, box, offWhite, [Math.min(2, w * 0.35), 0.9, 0.04], [0, 1.45, 0]);
+      put(board, box, metal, [Math.min(2, w * 0.35) + 0.08, 0.05, 0.08], [0, 0.98, 0.02]);
+    } else {
+      // A flat: a bed against the side wall, a wardrobe, a bedside table, and a sofa on a rug.
+      const cover = mat(pick(r, FABRIC));
+      const bed = item(room, -w / 2 + 1.05, -d / 2 + 1.2);
+      put(bed, box, darkWood, [1.5, 0.3, 2.05], [0, 0.15, 0]);
+      put(bed, box, offWhite, [1.4, 0.18, 1.95], [0, 0.39, 0]);
+      put(bed, box, cover, [1.42, 0.06, 1.3], [0, 0.5, 0.3]);
+      for (const s of [-1, 1]) put(bed, box, offWhite, [0.55, 0.12, 0.35], [s * 0.35, 0.54, -0.75]);
+      put(bed, box, darkWood, [1.5, 0.9, 0.06], [0, 0.45, -1.03]);
+      put(bed, box, wood, [0.45, 0.5, 0.4], [1.05, 0.25, -0.75]);
+      const ward = item(room, w / 2 - 0.4, -d / 2 + 0.9, -Math.PI / 2);
+      put(ward, box, wood, [1.2, tall, 0.6], [0, tall / 2, 0]);
+      put(ward, box, darkWood, [0.02, tall - 0.1, 0.01], [0, tall / 2, 0.305]);
+      for (const s of [-1, 1]) put(ward, box, metal, [0.03, 0.18, 0.03], [s * 0.08, tall * 0.55, 0.32]);
+      if (d > 4) {
+        const sofa = item(room, w * 0.1, d / 2 - 1.1, Math.PI);
+        const fab = mat(pick(r, FABRIC));
+        put(sofa, box, mat(pick(r, ['#6a5a48', '#4a5048', '#7a6a5a'])), [2.4, 0.01, 1.6], [0, 0.005, 0.9]);
+        put(sofa, box, fab, [1.9, 0.42, 0.85], [0, 0.21, 0]);
+        put(sofa, box, fab, [1.9, 0.45, 0.2], [0, 0.65, -0.33]);
+        for (const s of [-1, 1]) put(sofa, box, fab, [0.18, 0.6, 0.85], [s * 0.95, 0.3, 0]);
+        table(sofa, 0.9, 0.5, 0.42, wood, darkWood, 1.1);
+      }
+    }
+  }
+
+  /** Slabs, partitions, lights and furniture for a shop building of `rows` floors. */
+  function interior(b: Building, p: Plan, index: number, rows: number, rowH: number, front: number, rand: () => number) {
+    const ix = p.w / 2 - PANEL;
+    const iz = p.d / 2 - PANEL;
+    // The front room takes 60% of the depth.
+    const vs = -p.d * 0.1;
+    const street: RoomKind = (['shop', 'cafe', 'shop', 'cafe', 'lobby', 'shop'] as RoomKind[])[index % 6];
+    for (let r = 0; r < rows; r++) {
+      const y = r * rowH;
+      const h = r === rows - 1 ? p.h - 0.26 - y : rowH - 0.22;
+      // The floor (a slab upstairs, a tiled or boarded floor downstairs) and the ceiling lights: fixed.
+      const floor = piece(b, [0, y, 0], 0.11, true);
+      if (r > 0) put(floor, box, concrete, [ix * 2, 0.22, iz * 2], [0, -0.11, 0]);
+      put(floor, box, r === 0 ? tile : mat(pick(rand, ['#7a5e42', '#6a5a4a', '#5a5048'])), [ix * 2, 0.04, iz * 2], [0, 0.02, 0]);
+      for (const v of [(vs + iz) / 2, (vs - iz) / 2]) {
+        for (const x of ix > 4 ? [-ix / 2, ix / 2] : [0]) put(floor, box, litGlass, [0.9, 0.05, 0.35], [x, h - 0.03, front * v]);
+      }
+      // The partition between front and back rooms, with a doorway off-centre.
+      const wall = piece(b, [0, y + h / 2, front * vs], 0.08);
+      const dx = ix * 0.45;
+      const dw = 1;
+      const dh = Math.min(2.05, h - 0.15);
+      const left = ix + dx - dw / 2;
+      const right = ix - dx - dw / 2;
+      put(wall, box, plaster, [left, h, 0.12], [-ix + left / 2, 0, 0]);
+      put(wall, box, plaster, [right, h, 0.12], [ix - right / 2, 0, 0]);
+      put(wall, box, plaster, [dw, h - dh, 0.12], [dx, dh / 2, 0]);
+      const base = { b, front, y, w: ix * 2, rand, h };
+      furnish({ ...base, d: iz - vs, vc: (iz + vs) / 2 }, r === 0 ? street : r % 2 ? 'office' : 'flat');
+      furnish({ ...base, d: vs + iz, vc: (vs - iz) / 2 }, r === 0 ? 'store' : r % 2 ? 'flat' : 'office');
+    }
+  }
+
+  /** The boat shed: a concrete floor, a launch on its trailer, a workbench, drums, and gear on the walls. */
+  function shedInterior(b: Building, p: Plan, front: number, rand: () => number) {
+    const ix = p.w / 2 - PANEL;
+    const iz = p.d / 2 - PANEL;
+    const floor = piece(b, [0, 0, 0], 0.05, true);
+    put(floor, box, concrete, [ix * 2, 0.06, iz * 2], [0, 0.03, 0]);
+    for (const x of [-ix / 2, ix / 2]) put(floor, box, litGlass, [0.9, 0.05, 0.3], [x, p.h - 0.2, 0]);
+    const room: Room = { b, front, y: 0, w: ix * 2, d: iz * 2, vc: 0, h: p.h, rand };
+    // A small launch on a trailer, its bow to the door.
+    const boat = item(room, -ix * 0.15, 0.2, 0, 0.6);
+    for (const s of [-1, 1]) put(boat, box, darkMetal, [0.08, 0.08, 4.2], [s * 0.6, 0.35, 0]);
+    for (const s of [-1, 1]) for (const z of [-0.6, 0.4]) put(boat, cyl, black, [0.3, 0.2, 0.3], [s * 0.75, 0.3, z], [0, 0, Math.PI / 2]);
+    put(boat, box, mat('#c9c6bd', 0.5), [1.7, 0.7, 3.6], [0, 0.85, -0.1]);
+    put(boat, box, mat('#c9c6bd', 0.5), [1.2, 0.7, 0.9], [0, 0.85, 1.9], [0, Math.PI / 4, 0]).scale.set(0.9, 0.7, 0.9);
+    put(boat, box, mat('#2a3a44', 0.5), [1.72, 0.18, 3.62], [0, 0.6, -0.1]);
+    put(boat, box, mat('#a6a39a', 0.6), [1.2, 0.8, 1.2], [0, 1.6, -0.6]);
+    put(boat, box, glass, [1.22, 0.3, 1.0], [0, 1.75, -0.55]);
+    // A workbench along the side wall, with a vice and tools.
+    const bench = item(room, ix - 0.45, -iz * 0.3, -Math.PI / 2);
+    table(bench, 2.2, 0.75, 0.9, paleWood, darkMetal);
+    put(bench, box, darkMetal, [2.2, 0.03, 0.6], [0, 0.25, 0]);
+    put(bench, box, mat('#3a5a7a', 0.5, 0.5), [0.2, 0.18, 0.25], [-0.8, 0.99, 0.1]);
+    put(bench, box, mat('#8a2a24', 0.5, 0.5), [0.5, 0.25, 0.25], [0.5, 1.02, -0.1]);
+    put(bench, box, wood, [1.8, 0.9, 0.03], [0, 1.6, -0.36]);
+    for (let k = 0; k < 5; k++) put(bench, box, darkMetal, [0.04, 0.3 + rand() * 0.2, 0.03], [-0.7 + k * 0.35, 1.6, -0.33]);
+    // Oil drums in a corner.
+    const drums = item(room, -ix + 0.7, -iz + 0.7, 0, 0.45);
+    for (let k = 0; k < 3; k++) put(drums, cyl, mat(pick(rand, ['#2f4a6a', '#7a2a24', '#4a5a34'])), [0.29, 0.88, 0.29], [(k % 2) * 0.62, 0.44, Math.floor(k / 2) * 0.62]);
+    // Shelves of gear, and life rings on the wall.
+    const gear = item(room, ix * 0.35, -iz + 0.3);
+    shelves(gear, rand, 2, 0.5, 1.9, darkMetal, 4);
+    const rings = item(room, -ix + 0.08, iz * 0.3, Math.PI / 2, 0.1);
+    for (let k = 0; k < 2; k++) put(rings, ring, mat(k ? '#c9c6bd' : '#b8452a'), [1, 1, 1], [-0.5 + k * 0.9, 1.6, 0]);
+  }
+
   const buildings: Building[] = PLANS.map((p, index) => {
     const rand = rng(31 + index * 17);
     const shed = p.kind === 'shed';
     const group = new THREE.Group();
-    const base = Math.min(groundY(p.x - p.w / 2, p.z - p.d / 2), groundY(p.x + p.w / 2, p.z + p.d / 2), groundY(p.x, p.z));
+    const hw = (p.w * SCALE) / 2;
+    const hd = (p.d * SCALE) / 2;
+    const base = Math.min(groundY(p.x - hw, p.z - hd), groundY(p.x + hw, p.z + hd), groundY(p.x, p.z));
     group.position.set(p.x, base, p.z);
+    group.scale.setScalar(SCALE);
     scene.add(group);
     const b: Building = {
-      group, minX: p.x - p.w / 2, maxX: p.x + p.w / 2, minZ: p.z - p.d / 2, maxZ: p.z + p.d / 2,
-      height: p.h, hp: p.hp, state: 'standing', chunks: [], intact: null, shake: 0, cool: 0,
+      group, minX: p.x - hw, maxX: p.x + hw, minZ: p.z - hd, maxZ: p.z + hd,
+      height: p.h * SCALE, hp: p.hp, state: 'standing', chunks: [], intact: null, shake: 0, cool: 0,
     };
     // The street-facing side gets the door and shop windows (a shed's roller door faces the sea).
     const front = p.front ?? (p.z < TOWN.z ? 1 : -1);
@@ -405,6 +670,8 @@ export function createTown(scene: THREE.Scene): Town {
         }
       });
     }
+    if (shed) shedInterior(b, p, front, rand);
+    else interior(b, p, index, rows, rowH, front, rand);
     // Each piece becomes a mesh or two; then the whole building is drawn merged until it is first hit.
     const intact = new THREE.Group();
     for (const c of b.chunks) {
@@ -461,6 +728,7 @@ export function createTown(scene: THREE.Scene): Town {
     c.obj.getWorldPosition(tmp);
     b.group.remove(c.obj);
     c.obj.position.copy(tmp);
+    c.obj.scale.multiplyScalar(SCALE);
     scene.add(c.obj);
     const away = tmp.clone().sub(from).setY(0).normalize();
     c.vel.copy(away).multiplyScalar(power * (0.4 + Math.random() * 0.8)).setY(2 + Math.random() * power * 0.5);
@@ -482,7 +750,6 @@ export function createTown(scene: THREE.Scene): Town {
     collide(p, r, vel) {
       let hit: Building | null = null;
       for (const b of buildings) {
-        if (b.state !== 'standing') continue;
         if (p.y > b.group.position.y + b.height + 0.5) continue; // on (or over) the roof
         const cx = THREE.MathUtils.clamp(p.x, b.minX, b.maxX);
         const cz = THREE.MathUtils.clamp(p.z, b.minZ, b.maxZ);
@@ -508,30 +775,40 @@ export function createTown(scene: THREE.Scene): Town {
       }
       return hit;
     },
-    hit(b, from) {
-      if (b.state !== 'standing' || b.cool > 0) return false;
-      // First hit: swap the merged building for its separate panels.
+    bite(b, jaw) {
+      b.shake = Math.max(b.shake, 0.5);
+      const torn = b.chunks.filter((c) => c.loose).length;
+      const room = Math.floor(b.chunks.filter((c) => !c.fixed).length * MAX_TORN) - torn;
+      // The point on the wall the jaws close on, for the dust.
+      const at = tmp.set(THREE.MathUtils.clamp(jaw.x, b.minX, b.maxX), jaw.y, THREE.MathUtils.clamp(jaw.z, b.minZ, b.maxZ));
+      puff(at, 2, 1.5);
+      if (room <= 0) return 'solid';
+      // First bite: swap the merged building for its separate pieces.
       if (b.intact) {
         b.group.remove(b.intact);
         b.intact = null;
         for (const c of b.chunks) c.obj.visible = true;
       }
-      b.cool = 0.7;
-      b.hp--;
-      b.shake = 1;
-      // Knock loose the panels nearest the impact.
-      const local = from.clone().sub(b.group.position);
+      // Tear out the pieces nearest the jaws (measured in the building's own, unscaled space).
+      const local = jaw.clone().sub(b.group.position).divideScalar(SCALE);
       const near = b.chunks
-        .filter((c) => !c.loose)
+        .filter((c) => !c.loose && !c.fixed)
         .sort((a, c) => a.obj.position.distanceToSquared(local) - c.obj.position.distanceToSquared(local))
-        .slice(0, 3 + Math.floor(Math.random() * 3));
-      for (const c of near) loosen(c, b, from, 7);
+        .slice(0, Math.min(room, 2 + Math.floor(Math.random() * 2)));
+      // Wrenched out towards the jaws (a negative push pulls) and dropped.
+      for (const c of near) loosen(c, b, jaw, -2.5);
+      b.hp--;
+      if (b.hp === 0 && b.state === 'standing') {
+        b.state = 'wrecked';
+        return 'wrecked';
+      }
+      return 'bitten';
+    },
+    bump(b, from) {
+      if (b.cool > 0) return false;
+      b.cool = 0.7;
+      b.shake = 1;
       puff(tmp.set(THREE.MathUtils.clamp(from.x, b.minX, b.maxX), b.group.position.y + 0.8, THREE.MathUtils.clamp(from.z, b.minZ, b.maxZ)), 3, 2);
-      if (b.hp > 0) return false;
-      // Collapse: everything comes down, roof first, walls spilling outwards.
-      b.state = 'rubble';
-      for (const c of [...b.chunks]) loosen(c, b, from, 3.5);
-      puff(tmp.set((b.minX + b.maxX) / 2, b.group.position.y + 1, (b.minZ + b.maxZ) / 2), 10, Math.max(b.maxX - b.minX, b.maxZ - b.minZ));
       return true;
     },
     setLights(on) {

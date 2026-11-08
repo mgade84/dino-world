@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { setWind, treeGeometries, treeMaterial, treeTexture } from './trees';
 
 /** Half the width of the square play area; a wall of jungle grows beyond it. */
 export const HALF = 125;
@@ -117,6 +118,8 @@ export interface World {
   /** A random open spot at least `clear` from any obstacle. */
   openSpot(rand: () => number, clear: number): THREE.Vector3;
   update(t: number, dt: number): void;
+  /** Full tree models (roots, coconuts, more leaves) or the cheap ones everywhere, for the graphics setting. */
+  setTreeDetail(full: boolean): void;
   dispose(): void;
 }
 
@@ -129,24 +132,6 @@ function lumpy(geo: THREE.BufferGeometry, amount: number, seed: number) {
     const n = Math.sin(v.x * 3.1 + seed) * Math.sin(v.y * 2.7 + seed * 1.3) * Math.sin(v.z * 3.3 + seed * 0.7);
     v.multiplyScalar(1 + n * amount);
     p.setXYZ(i, v.x, v.y, v.z);
-  }
-  geo.computeVertexNormals();
-  return geo;
-}
-
-/** A palm leaf: a strip from the crown (z = 0) to the tip (z = 1) that tapers and droops. */
-function leafGeometry() {
-  const geo = new THREE.PlaneGeometry(1, 1, 2, 8);
-  geo.rotateX(-Math.PI / 2);
-  geo.translate(0, 0, 0.5);
-  const p = geo.attributes.position;
-  for (let i = 0; i < p.count; i++) {
-    const z = p.getZ(i);
-    const x = p.getX(i);
-    const taper = Math.sin(Math.min(1, z * 1.15) * Math.PI) * 0.9 + 0.1;
-    p.setX(i, x * taper);
-    // Droop, with a fold along the midrib.
-    p.setY(i, -z * z * 0.42 + Math.abs(x) * taper * 0.12);
   }
   geo.computeVertexNormals();
   return geo;
@@ -293,38 +278,25 @@ export function buildWorld(): World {
     return mesh;
   }
   type V3 = [number, number, number];
-  const trunks: { p: V3; s: V3; r?: V3 }[] = [];
-  const canopies: { p: V3; s: V3; r?: V3; c: string }[] = [];
-  const fronds: { p: V3; s: V3; r: V3; c: string }[] = [];
   const bushes: { p: V3; s: V3; r?: V3; c: string }[] = [];
   const rocks: { p: V3; s: V3; r: V3; c: string }[] = [];
   const flowers: { p: V3; s: V3; c: string }[] = [];
   const greens = ['#2c4a28', '#35532c', '#283f24', '#3d5a30', '#2f4a2a'];
   const pick = <T>(a: T[]) => a[Math.floor(rand() * a.length)];
 
-  function tree(x: number, z: number, scale: number) {
+  // Trees: a few modelled variants of each kind (trees.ts), one InstancedMesh each.
+  const kinds = treeGeometries(rand);
+  const variants = [...kinds.broadleaf, kinds.broadleafLite, ...kinds.palm, kinds.palmLite];
+  const planted: { p: V3; s: V3; r: V3; c: string }[][] = variants.map(() => []);
+  const tints = ['#ffffff', '#e6efdc', '#f6ffe6', '#dfe5d4', '#fff2dc'];
+  function tree(x: number, z: number, scale: number, far = false) {
     const g = groundY(x, z) - 0.2;
-    if (rand() < 0.4) {
-      // Palm: a leaning trunk and drooping fronds.
-      const h = (4.2 + rand() * 1.8) * scale;
-      const lean = (rand() - 0.5) * 0.25;
-      trunks.push({ p: [x, g + h / 2, z], s: [0.35, h, 0.35], r: [lean, 0, lean] });
-      const top: V3 = [x + Math.sin(lean) * h * 0.5, g + h, z - Math.sin(lean) * h * 0.5];
-      const n = 7;
-      for (let k = 0; k < n; k++) {
-        const a = (k / n) * Math.PI * 2 + rand();
-        fronds.push({ p: [top[0], top[1] - 0.1, top[2]], s: [0.9, 2.6, 3.2], r: [-0.15 + rand() * 0.2, a, 0], c: pick(greens) });
-      }
-      addCollider({ x, z, r: 0.9 });
-    } else {
-      // Jungle tree: thick trunk, two leafy blobs.
-      const h = (2.2 + rand() * 1.4) * scale;
-      trunks.push({ p: [x, g + h / 2, z], s: [0.6 * scale, h, 0.6 * scale] });
-      const r = (1.9 + rand() * 1.1) * scale;
-      canopies.push({ p: [x, g + h + r * 0.55, z], s: [r, r * 0.8, r], r: [0, rand() * 3, 0], c: pick(greens) });
-      canopies.push({ p: [x + (rand() - 0.5) * r, g + h + r * 1.05, z + (rand() - 0.5) * r], s: [r * 0.65, r * 0.55, r * 0.65], c: pick(greens) });
-      addCollider({ x, z, r: 1.1 * scale });
-    }
+    const isPalm = rand() < 0.4;
+    const k = isPalm ? kinds.broadleaf.length + 1 : 0;
+    const which = k + (far ? kinds.broadleaf.length : Math.floor(rand() * kinds.broadleaf.length));
+    const s = isPalm ? scale : scale * 1.05;
+    planted[which].push({ p: [x, g, z], s: [s * (0.9 + rand() * 0.2), s * (0.9 + rand() * 0.25), s * (0.9 + rand() * 0.2)], r: [0, rand() * Math.PI * 2, 0], c: pick(tints) });
+    addCollider({ x, z, r: isPalm ? 0.9 : 1.1 * scale });
   }
 
   // Wall of trees around the edge.
@@ -334,7 +306,7 @@ export function buildWorld(): World {
       const x = Math.max(-HALF - 30, Math.min(HALF + 30, Math.cos(a) * rr * 1.42));
       const z = Math.max(-HALF - 30, Math.min(HALF + 30, Math.sin(a) * rr * 1.42));
       if (Math.max(Math.abs(x), Math.abs(z)) < HALF + 3 || z > SHORE) continue;
-      if (rand() < 0.55) tree(x, z, 1.2 + rand() * 0.4);
+      if (rand() < 0.55) tree(x, z, 1.2 + rand() * 0.4, true);
     }
   }
   // Scattered jungle, keeping a clearing at the start and room around the lake and volcano.
@@ -369,9 +341,19 @@ export function buildWorld(): World {
   }
 
   const flat = { flatShading: true };
-  instanced(new THREE.CylinderGeometry(0.8, 1, 1, 9), lambert({ color: '#3b3026' }), trunks);
-  instanced(lumpy(new THREE.IcosahedronGeometry(1, 1), 0.2, 11), lambert({ color: "#ffffff" }), canopies);
-  instanced(leafGeometry(), lambert({ color: '#ffffff', side: THREE.DoubleSide }), fronds);
+  const treeMat = keep(treeMaterial(keep(treeTexture(rand))));
+  /** The play area's trees, with their full model and the cheap one they swap to at low detail. */
+  const detailed: { mesh: THREE.InstancedMesh; full: THREE.BufferGeometry; lite: THREE.BufferGeometry }[] = [];
+  variants.forEach((geo, i) => {
+    const lite = geo === kinds.broadleafLite || geo === kinds.palmLite;
+    if (!planted[i].length) {
+      keep(geo); // a lite model may still be swapped in, so free it with the rest
+      return;
+    }
+    // The far wall casts no shadows: it's outside the play area, and the shadow pass would draw it all.
+    const mesh = instanced(geo, treeMat, planted[i], !lite);
+    if (!lite) detailed.push({ mesh, full: geo, lite: kinds.broadleaf.includes(geo) ? kinds.broadleafLite : kinds.palmLite });
+  });
   instanced(lumpy(new THREE.IcosahedronGeometry(1, 1), 0.25, 12), lambert({ color: '#ffffff' }), bushes);
   instanced(lumpy(new THREE.DodecahedronGeometry(1, 1), 0.18, 13), lambert({ color: '#ffffff', ...flat }), rocks);
   instanced(new THREE.CircleGeometry(1, 10).rotateX(-Math.PI / 2), lambert({ color: '#ffffff' }), flowers, false);
@@ -401,7 +383,17 @@ export function buildWorld(): World {
       }
       return new THREE.Vector3(0, groundY(0, 8), 8);
     },
+    setTreeDetail(full) {
+      for (const d of detailed) {
+        const geo = full ? d.full : d.lite;
+        if (d.mesh.geometry === geo) continue;
+        d.mesh.geometry = geo;
+        d.mesh.computeBoundingSphere();
+        d.mesh.computeBoundingBox();
+      }
+    },
     update(t) {
+      setWind(t);
       for (const m of smoke) {
         const k = (t * 0.12 + m.userData.t) % 1;
         m.position.set(VOLCANO.x + Math.sin(k * 6 + m.userData.t * 9) * 2, vy + 25 + k * 22, VOLCANO.z + k * 6);

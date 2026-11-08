@@ -94,8 +94,8 @@ export const LEVELS: LevelDef[] = [
     name: { en: 'Main Street', da: 'Hovedgaden' },
     place: { en: 'Visitor centre', da: 'Besøgscentret' },
     brief: {
-      en: 'Guests are being herded to Main Street, west of the paddocks, to wait out the storm. Halcyon keeps more animals in cages nearby. Break them out, bring the buildings down and empty the streets.',
-      da: 'Gæsterne bliver ført hen til hovedgaden, vest for indhegningerne, for at vente stormen af. Halcyon holder flere dyr i bure tæt ved. Bryd dem ud, vælt bygningerne og tøm gaderne.',
+      en: 'Guests are being herded to Main Street, west of the paddocks, to wait out the storm. Halcyon keeps more animals in cages nearby. Break them out, bite chunks out of the buildings and empty the streets.',
+      da: 'Gæsterne bliver ført hen til hovedgaden, vest for indhegningerne, for at vente stormen af. Halcyon holder flere dyr i bure tæt ved. Bryd dem ud, bid stykker ud af bygningerne og tøm gaderne.',
     },
     goals: [{ kind: 'free', n: 2 }, { kind: 'destroy', n: 3 }, { kind: 'scare', n: 10 }, { kind: 'smash', n: 4 }],
     start: [-38, 78, -Math.PI / 2],

@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import type { GameContext } from '../types';
 import { ambience, noiseLoop, sfx, toneLoop } from '../engine/audio';
-import { L, type Txt } from '../i18n';
+import { L, UI, type Txt } from '../i18n';
+import { buildSettings } from '../settings';
 import { animate, buildDino, disposeDinoAssets, DINOS, type DinoSpec, type Rig } from './dinos';
 import { buildWorld, floorY, groundY, HALF, rng, CAGE_SPOTS, POWER, SHORE } from './world';
 import { CAGE, CAGE_HITS, CAR_COLORS, createCage, createCar, createPerson, disposePark, knockDown, posePerson, scare, updateCar, wreckCar, type Cage, type Car, type Person } from './park';
@@ -114,6 +115,11 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
 
   const world = buildWorld();
   scene.add(world.group);
+  // Low draws the cheap tree models everywhere; Auto starts with the full ones and may step down.
+  let fullTrees = quality !== 'low';
+  /** Times Auto has dropped the full trees; after the second it keeps the cheap ones, so it doesn't see-saw. */
+  let treeDrops = 0;
+  world.setTreeDetail(fullTrees);
   const weather = createWeather(scene, quality === 'low' ? 0.5 : 1);
   const town = createTown(scene);
   // Story levels say whether there are fences; Rampage has them live.
@@ -173,6 +179,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       <h2>${S().paused}</h2>
       <button class="dn-big" data-act="resume">${S().resume}</button>
       ${story ? `<button class="dn-big dn-ghost" data-act="restart">${S().restart}</button>` : ''}
+      <button class="dn-big dn-ghost" data-act="settings">${L(UI).settings}</button>
       <button class="dn-big dn-ghost" data-act="quit">${S().quit}</button>
     </div>`;
   root.appendChild(hud);
@@ -662,7 +669,12 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       return;
     }
     if (e.code === 'Escape' || e.code === 'KeyP') {
-      if (e.type === 'keydown' && !picking && !finished) setPaused(!paused);
+      if (e.type !== 'keydown' || picking || finished) return;
+      // With settings open, Esc steps back to the pause menu instead of resuming.
+      if (closeSettingsPanel) {
+        closeSettings();
+        menu.hidden = false;
+      } else setPaused(!paused);
       return;
     }
     if (paused) return;
@@ -744,7 +756,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   /** The nearest bars within biting reach, whichever way the dinosaur faces: its own cage from inside, others' from outside. */
   const facing = new THREE.Vector3();
   let biteHeading = 0;
-  function biteTarget(): { cage: Cage; side: number; captive: Captive | null } | null {
+  type BiteTarget = { cage: Cage; side: number; captive: Captive | null; building?: undefined } | { building: Building; heading: number };
+  function biteTarget(): BiteTarget | null {
     if (!player) return null;
     const p = player.root.position;
     facing.set(Math.sin(heading), 0, Math.cos(heading));
@@ -758,8 +771,17 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       const side = c.cage.nearSide(p, facing, reach, false, -2);
       if (side >= 0) return { cage: c.cage, side, captive: c };
     }
+    // A building close by and roughly ahead: bite into its nearest wall.
+    for (const b of town.buildings) {
+      const dx = THREE.MathUtils.clamp(p.x, b.minX, b.maxX) - p.x;
+      const dz = THREE.MathUtils.clamp(p.z, b.minZ, b.maxZ) - p.z;
+      const d = Math.hypot(dx, dz);
+      if (d > reach || d < 1e-3 || (dx * facing.x + dz * facing.z) / d < 0.4) continue;
+      return { building: b, heading: Math.atan2(dx, dz) };
+    }
     return null;
   }
+  const jaw = new THREE.Vector3();
 
   /** The roar button: bites the bars when close to them, otherwise roars. */
   function act() {
@@ -767,6 +789,34 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     const target = biteTarget();
     if (!target || !grounded) return roar();
     player.biting = 1;
+    if (target.building) {
+      // Into the wall: the jaws close on whatever is nearest them and tear it out.
+      const b = target.building;
+      biteHeading = target.heading;
+      sfx.chomp();
+      timers.push(
+        window.setTimeout(() => {
+          if (!alive || !player) return;
+          player.head.getWorldPosition(jaw);
+          const got = town.bite(b, jaw);
+          if (got === 'solid') {
+            sfx.thud();
+            shake = Math.max(shake, 0.25);
+            return;
+          }
+          sfx.crunch();
+          sfx.crash();
+          shake = Math.max(shake, got === 'wrecked' ? 0.9 : 0.5);
+          const c = new THREE.Vector3((b.minX + b.maxX) / 2, 0, (b.minZ + b.maxZ) / 2);
+          for (const pp of people) if (Math.hypot(pp.group.position.x - c.x, pp.group.position.z - c.z) < (got === 'wrecked' ? 22 : 12)) frighten(pp);
+          if (got === 'wrecked') {
+            sfx.collapse();
+            progress('destroy');
+          }
+        }, 220),
+      );
+      return;
+    }
     // Turn to face the bars while lunging, so a bite always lands.
     const n = target.cage.normal(target.side);
     const toward = target.captive ? -1 : 1;
@@ -827,13 +877,36 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
 
   // ---- Pause menu ----
   function setPaused(on: boolean) {
+    if (!on) closeSettings();
     paused = on;
     menu.hidden = !on;
     keys.clear();
     if (on) unlockPointer();
+    // Let go of the joystick finger's capture: iPad Safari can drop a second finger's click on the menu while it's held.
+    if (pointer !== null && canvas.hasPointerCapture(pointer)) canvas.releasePointerCapture(pointer);
     stick.hidden = true;
     pointer = null;
     sx = sy = 0;
+  }
+  // Settings over the paused level: the pause menu stays underneath and comes back when they close.
+  let closeSettingsPanel: (() => void) | null = null;
+  function openSettings() {
+    if (closeSettingsPanel) return;
+    menu.hidden = true;
+    closeSettingsPanel = buildSettings(hud, {
+      inGame: true,
+      onClose: () => {
+        closeSettings();
+        if (paused) menu.hidden = false;
+      },
+      onChange: () => {
+        fpsEl.hidden = !getShowFps();
+      },
+    });
+  }
+  function closeSettings() {
+    closeSettingsPanel?.();
+    closeSettingsPanel = null;
   }
   hud.querySelector('.dn-pause')!.addEventListener('click', () => {
     if (finished) return;
@@ -846,6 +919,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     sfx.tap();
     const a = b.dataset.act;
     if (a === 'resume') setPaused(false);
+    else if (a === 'settings') openSettings();
     else if (a === 'restart') opts.onRestart();
     else opts.onQuit();
   });
@@ -1037,15 +1111,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       const hitBuilding = high ? null : moveOnGround(p, vel, dt, player.radius, !grounded);
       if (hitBuilding && free && charge > CHARGE) {
         vel.multiplyScalar(-0.25);
-        if (town.hit(hitBuilding, p)) {
-          // Down it comes.
-          sfx.collapse();
-          shake = 1.1;
-          const c = new THREE.Vector3((hitBuilding.minX + hitBuilding.maxX) / 2, 0, (hitBuilding.minZ + hitBuilding.maxZ) / 2);
-          for (const pp of people) if (Math.hypot(pp.group.position.x - c.x, pp.group.position.z - c.z) < 22) frighten(pp);
-          progress('destroy');
-        } else {
-          sfx.crash();
+        // Charging only shakes a building: it takes biting to tear pieces out of it.
+        if (town.bump(hitBuilding, p)) {
+          sfx.thud();
           shake = Math.max(shake, 0.5);
         }
       }
@@ -1430,18 +1498,29 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     if (quality !== 'auto') return;
     if (avg > ADAPT.slow) {
       fastWindows = 0;
-      if (ratio > ADAPT.min + 0.01) {
+      // First the cheap trees (the jungle is the heaviest thing on screen and it barely shows), then resolution.
+      if (fullTrees) {
+        fullTrees = false;
+        treeDrops++;
+        world.setTreeDetail(false);
+      } else if (ratio > ADAPT.min + 0.01) {
         ratio = Math.max(ADAPT.min, ratio - ADAPT.step);
         renderer.setPixelRatio(ratio);
         resize();
       } else if (sun.castShadow) sun.castShadow = false; // last resort: no shadows
-    } else if (avg < ADAPT.fast && ratio < maxRatio - 0.01) {
+    } else if (avg < ADAPT.fast && (ratio < maxRatio - 0.01 || (!fullTrees && treeDrops < 2))) {
       // Only step back up after a couple of fast windows in a row, so it doesn't flicker between sizes.
-      if (++fastWindows >= 2) {
+      // Resolution comes back first, the full trees last (and they need a longer run of fast frames).
+      if (++fastWindows >= (ratio < maxRatio - 0.01 ? 2 : 4)) {
         fastWindows = 0;
-        ratio = Math.min(maxRatio, ratio + ADAPT.step * 0.66);
-        renderer.setPixelRatio(ratio);
-        resize();
+        if (ratio < maxRatio - 0.01) {
+          ratio = Math.min(maxRatio, ratio + ADAPT.step * 0.66);
+          renderer.setPixelRatio(ratio);
+          resize();
+        } else {
+          fullTrees = true;
+          world.setTreeDetail(true);
+        }
       }
     } else fastWindows = 0;
   }
@@ -1464,7 +1543,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       frameMs += raw;
       if (frameMs >= ADAPT.window) {
         const avg = frameMs / frames;
-        if (!fpsEl.hidden) fpsEl.textContent = `${Math.round(1000 / avg)} fps · ${ratio.toFixed(2)}×${sun.castShadow ? '' : ' · no shadows'} · ${renderer.info.render.calls} calls`;
+        if (!fpsEl.hidden) fpsEl.textContent = `${Math.round(1000 / avg)} fps · ${ratio.toFixed(2)}×${sun.castShadow ? '' : ' · no shadows'}${fullTrees ? '' : ' · simple trees'} · ${renderer.info.render.calls} calls`;
         if (intro < 0 && !paused) adapt(avg);
         frames = 0;
         frameMs = 0;
@@ -1514,6 +1593,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     document.removeEventListener('mousemove', onMouseMove);
     document.removeEventListener('pointerlockchange', onLockChange);
     unlockPointer();
+    closeSettings();
     clearTimeout(radioTimer);
     clearTimeout(toastTimer);
     ro.disconnect();

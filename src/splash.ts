@@ -5,8 +5,6 @@ import { rampageBest, rampageOpen } from './game/progress';
 import { S } from './game/strings';
 import './splash.css';
 
-const HOLD_MS = 3000;
-
 /** The jungle's edge against the sky: a ragged canopy with a few tall palms. */
 const CANOPY = `
 <svg class="sp-canopy" viewBox="0 0 1200 300" preserveAspectRatio="none" aria-hidden="true">
@@ -74,10 +72,8 @@ export function mountSplash(
       <button class="sp-item" data-go="rampage" ${canRampage ? '' : 'disabled'}><b>${s.rampage}</b><small>${canRampage ? (rampageBest() ? s.best(rampageBest().toLocaleString()) : s.rampageSub) : s.rampageLocked}</small></button>
     </nav>
 
-    <button class="round-btn settings-btn sp-gear" aria-label="${t.settings}">
-      <svg class="hold-ring" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="29" /></svg>
+    <button class="round-btn sp-gear" aria-label="${t.settings}">
       <svg class="sp-cog" viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.5 7.5 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-1.7-1L15 3.5h-4l-.4 2.5a7.6 7.6 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.5 7.5 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.6 7.6 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7.6 7.6 0 0 0 1.7-1l2.4 1 2-3.4zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg>
-      <span class="hold-hint">${t.hold}</span>
     </button>`;
   app.appendChild(el);
 
@@ -103,35 +99,13 @@ export function mountSplash(
     timers.push(window.setTimeout(b.dataset.go === 'story' ? go.story : go.rampage, 700));
   });
 
-  // Settings open only after holding the button for HOLD_MS, so a stray tap doesn't open them.
-  const gear = el.querySelector<HTMLElement>('.sp-gear')!;
-  let holdTimer = 0;
-  let hintTimer = 0;
-  const cancelHold = () => {
-    if (!gear.classList.contains('holding')) return;
-    clearTimeout(holdTimer);
-    gear.classList.remove('holding');
-    gear.classList.add('hint');
-    clearTimeout(hintTimer);
-    hintTimer = window.setTimeout(() => gear.classList.remove('hint'), 2500);
-  };
-  gear.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    gear.setPointerCapture(e.pointerId);
-    gear.classList.remove('hint');
-    gear.classList.add('holding');
+  el.querySelector('.sp-gear')!.addEventListener('click', () => {
+    if (leaving) return;
     sfx.tap();
-    holdTimer = window.setTimeout(() => {
-      gear.classList.remove('holding');
-      sfx.pop();
-      go.settings();
-    }, HOLD_MS);
+    go.settings();
   });
-  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) gear.addEventListener(ev, cancelHold);
 
   return () => {
-    clearTimeout(holdTimer);
-    clearTimeout(hintTimer);
     timers.forEach(clearTimeout);
     el.remove();
   };

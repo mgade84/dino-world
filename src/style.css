@@ -76,7 +76,7 @@ button {
   transition: transform 0.1s, background 0.1s;
 }
 
-.round-btn > svg:not(.hold-ring) {
+.round-btn > svg {
   width: 26px;
   height: 26px;
   fill: none;
@@ -256,57 +256,19 @@ button {
   opacity: 0.4;
 }
 
-/* Hold-to-open settings button: a ring fills while held. */
-.settings-btn {
-  touch-action: none;
+/* Settings opened over a paused level: below the shell's back-to-title button, above the game's HUD. */
+.menu.in-game {
+  z-index: 5;
+  padding-top: calc(var(--top, 80px) + 8px);
+  background: rgba(5, 8, 10, 0.94);
+  animation: dn-in 0.2s ease-out;
 }
 
-.hold-ring {
-  position: absolute;
-  inset: -1px;
-  width: calc(100% + 2px);
-  height: calc(100% + 2px);
-  transform: rotate(-90deg);
-  pointer-events: none;
-}
-
-.hold-ring circle {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 4;
-  stroke-linecap: round;
-  stroke-dasharray: 183;
-  stroke-dashoffset: 183;
-  transition: stroke-dashoffset 0.25s ease-out;
-}
-
-.settings-btn.holding .hold-ring circle {
-  stroke-dashoffset: 0;
-  transition: stroke-dashoffset 3s linear;
-}
-
-.hold-hint {
-  position: absolute;
-  top: calc(100% + 12px);
-  right: 0;
-  padding: 8px 14px;
-  border-radius: 4px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  color: var(--text);
+.settings-note {
+  margin: 12px 0 0;
+  padding: 0 22px;
   font-size: 15px;
-  font-weight: 600;
-  white-space: nowrap;
-  opacity: 0;
-  transform: translateY(-6px);
-  transition: opacity 0.2s, transform 0.2s;
-  pointer-events: none;
-  z-index: 2;
-}
-
-.settings-btn.hint .hold-hint {
-  opacity: 1;
-  transform: none;
+  color: var(--muted);
 }
 
 /* ---------- Game shell ---------- */
