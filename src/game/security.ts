@@ -7,6 +7,8 @@ import { groundY } from './world';
  * Park rangers with tranquilliser rifles. They walk a patrol until they see the dinosaur, then stand and
  * shoot darts at it. A dart is a real projectile, so a dinosaur on the move can dodge. Up close, or when
  * it roars, they break and run; rammed, they're knocked flat. After a while they come back to the fight.
+ * Caught within reach, a ranger can be snatched up by the jacket, shaken and flung aside: they land out
+ * cold and lie there for the rest of the level (no harm done beyond that; see the tone rules in CLAUDE.md).
  */
 
 /** How far a ranger can see the dinosaur from, and the range they shoot at. */
@@ -17,12 +19,19 @@ const DART_SPEED = 55;
 /** Seconds between shots (plus up to SHOT_JITTER). */
 const SHOT_EVERY = 2.3;
 const SHOT_JITTER = 1.5;
+/** Seconds a snatched ranger is held and shaken before being flung. */
+export const HOLD_FOR = 1.25;
+/** Where a ranger is held from, in their own frame: the back of the jacket collar. */
+const COLLAR = new THREE.Vector3(0, 2.05, -0.14);
+const GRAVITY = 26;
 
 interface Ranger {
   p: Person;
   home: THREE.Vector3;
   target: THREE.Vector3;
-  mode: 'patrol' | 'aim' | 'flee' | 'down';
+  mode: 'patrol' | 'aim' | 'flee' | 'down' | 'held' | 'thrown' | 'out';
+  /** Thrown: tumbling speed, radians per second. */
+  spin: number;
   t: number;
   cool: number;
 }
@@ -37,6 +46,9 @@ export interface PlayerView {
   free: boolean;
   /** Sedated or otherwise not a target. */
   ignore: boolean;
+  /** Where the jaws are (a held ranger hangs from them) and which way the dinosaur faces. */
+  jaw: THREE.Vector3;
+  heading: number;
 }
 
 export interface Security {
@@ -45,6 +57,12 @@ export interface Security {
   roar(at: THREE.Vector3, range: number): void;
   /** After the dinosaur wakes at a checkpoint: rangers near it fall back to their posts. */
   regroup(at: THREE.Vector3): void;
+  /** The nearest ranger on their feet (or knocked flat) within `reach` and roughly ahead, or -1. */
+  biteable(at: THREE.Vector3, facing: THREE.Vector3, reach: number): number;
+  /** Where ranger `i` is. */
+  where(i: number): THREE.Vector3;
+  /** The jaws close on ranger `i`: held and shaken for HOLD_FOR seconds, then flung aside. False if out of reach by now. */
+  snatch(i: number, jaw: THREE.Vector3, reach: number): boolean;
   /** More rangers arrive at posts around the island. */
   reinforce(n: number): void;
   readonly count: number;
@@ -57,7 +75,7 @@ export function createSecurity(
   spot: () => THREE.Vector3,
   block: (p: THREE.Vector3, r: number) => void,
   rand: () => number,
-  hooks: { onHit(): void; onSpot(): void; onKnock(): void },
+  hooks: { onHit(): void; onSpot(): void; onKnock(): void; onLand(at: THREE.Vector3): void },
 ): Security {
   const owned: { dispose(): void }[] = [];
   const dartGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.6, 5).rotateX(Math.PI / 2);
@@ -72,13 +90,16 @@ export function createSecurity(
     const home = spot();
     p.group.position.copy(home);
     scene.add(p.group);
-    return { p, home, target: home.clone(), mode: 'patrol', t: rand() * 3, cool: 0 };
+    return { p, home, target: home.clone(), mode: 'patrol', t: rand() * 3, cool: 0, spin: 0 };
   };
   const rangers: Ranger[] = Array.from({ length: count }, recruit);
   const darts: Dart[] = [];
   let spotted = false;
   const to = new THREE.Vector3();
   const chest = new THREE.Vector3();
+  const hang = new THREE.Vector3();
+  /** Who can't be snatched, rammed or scared any more. */
+  const taken = (r: Ranger) => r.mode === 'held' || r.mode === 'thrown' || r.mode === 'out';
 
   function fire(r: Ranger, player: PlayerView) {
     const from = r.p.group.position.clone().add(new THREE.Vector3(Math.sin(r.p.heading) * 0.8, 2.2, Math.cos(r.p.heading) * 0.8));
@@ -109,6 +130,58 @@ export function createSecurity(
         r.cool -= dt;
         to.subVectors(player.pos, q).setY(0);
         const d = to.length();
+        if (r.mode === 'out') {
+          // Out cold where they landed, for the rest of the level.
+          posePerson(p, dt, t, 0);
+          continue;
+        }
+        if (r.mode === 'held') {
+          // Hanging by the collar from the jaws, swinging with the shake (a beat behind the head), legs
+          // kicking and arms flailing.
+          const k = Math.min(1, r.t / HOLD_FOR);
+          const env = Math.sin(Math.PI * k);
+          const g = p.group;
+          g.rotation.order = 'YXZ';
+          g.rotation.set(0.35 + Math.sin(t * 19 - 2.2) * 0.25 * env, player.heading + Math.PI / 2, Math.sin(t * 19 - 1.4) * 0.9 * env);
+          hang.copy(COLLAR).applyEuler(g.rotation);
+          q.copy(player.jaw).sub(hang);
+          p.legs.forEach((l, i) => l.rotation.set(Math.sin(t * 15 + i * Math.PI) * 0.7 - 0.2, 0, (i ? 1 : -1) * 0.15));
+          p.shins.forEach((sh, i) => (sh.rotation.x = 0.5 + Math.sin(t * 15 + i * Math.PI + 1) * 0.45));
+          p.arms.forEach((a, i) => a.rotation.set(-1.9 + Math.sin(t * 12 + i * 2) * 0.7, 0, (i ? 1 : -1) * (0.5 + Math.sin(t * 9 + i) * 0.3)));
+          p.forearms.forEach((f, i) => f.rotation.set(-0.6 + Math.sin(t * 13 + i) * 0.4, 0, 0));
+          if (r.t >= HOLD_FOR) {
+            // Flung out to the side with the last whip of the head, tumbling.
+            const side = Math.sin(t * 19 - 1.4) >= 0 ? 1 : -1;
+            const a = player.heading + (side * Math.PI) / 2;
+            p.vel.set(Math.sin(a) * 9 + Math.sin(player.heading) * 3, 7.5, Math.cos(a) * 9 + Math.cos(player.heading) * 3);
+            r.spin = side * (5 + rand() * 3);
+            r.mode = 'thrown';
+            r.t = 0;
+          }
+          continue;
+        }
+        if (r.mode === 'thrown') {
+          const g = p.group;
+          p.vel.y -= GRAVITY * dt;
+          q.addScaledVector(p.vel, dt);
+          g.rotation.z += r.spin * dt;
+          g.rotation.x += r.spin * 0.4 * dt;
+          const floor = groundY(q.x, q.z);
+          if (q.y <= floor && p.vel.y < 0) {
+            // Down with a thump, flat on their back, and out of it.
+            q.y = floor;
+            block(q, 0.6);
+            q.y = groundY(q.x, q.z);
+            g.rotation.order = 'XYZ';
+            g.rotation.set(0, rand() * Math.PI * 2, 0);
+            p.heading = g.rotation.y;
+            p.state = 'out';
+            p.t = 0.35;
+            r.mode = 'out';
+            hooks.onLand(q);
+          }
+          continue;
+        }
         // Rammed at a run: knocked flat.
         if (player.free && p.state !== 'down' && d < player.radius + 0.9 && player.speed > 3 && player.pos.y - q.y < 3) {
           knockDown(p, player.pos);
@@ -199,12 +272,42 @@ export function createSecurity(
     },
     roar(at, range) {
       for (const r of rangers) {
-        if (r.mode === 'down') continue;
+        if (r.mode === 'down' || taken(r)) continue;
         if (r.p.group.position.distanceTo(at) < range) {
           r.mode = 'flee';
           r.t = 0;
         }
       }
+    },
+    biteable(at, facing, reach) {
+      let best = -1;
+      let bestD = reach;
+      rangers.forEach((r, i) => {
+        if (taken(r)) return;
+        const q = r.p.group.position;
+        const dx = q.x - at.x;
+        const dz = q.z - at.z;
+        const d = Math.hypot(dx, dz);
+        if (d > bestD || Math.abs(q.y - at.y) > 3 || (d > 1e-3 && (dx * facing.x + dz * facing.z) / d < 0.3)) return;
+        best = i;
+        bestD = d;
+      });
+      return best;
+    },
+    where(i) {
+      return rangers[i].p.group.position;
+    },
+    snatch(i, jaw, reach) {
+      const r = rangers[i];
+      if (!r || taken(r)) return false;
+      const q = r.p.group.position;
+      if (Math.hypot(q.x - jaw.x, q.z - jaw.z) > reach) return false;
+      r.mode = 'held';
+      r.t = 0;
+      r.p.state = 'held';
+      r.p.aim = 0;
+      r.p.alert.visible = false;
+      return true;
     },
     get count() {
       return rangers.length;
@@ -214,7 +317,7 @@ export function createSecurity(
     },
     regroup(at) {
       for (const r of rangers) {
-        if (r.p.group.position.distanceTo(at) > SIGHT + 10) continue;
+        if (taken(r) || r.p.group.position.distanceTo(at) > SIGHT + 10) continue;
         // Back to a post well away from the checkpoint.
         const home = spot();
         r.home.copy(home);

@@ -392,12 +392,21 @@ export interface Car {
   group: THREE.Group;
   body: THREE.MeshStandardMaterial;
   heading: number;
+  /** Bitten and tipped over (or on its way over). */
   wrecked: boolean;
-  /** Seconds since it was wrecked. */
+  /** upright on its wheels; tipping over (bitten); on its side. */
+  pose: 'upright' | 'tipping' | 'side';
+  /** Seconds since it was bitten. */
   t: number;
-  from: THREE.Vector3;
-  push: THREE.Vector3;
-  roll: number;
+  /** Where its wheels stand (the group is placed from this, rolled about the edge it tips over). */
+  base: THREE.Vector3;
+  /** Which side it tips onto: +1 its +x side, -1 its -x side. */
+  side: number;
+  /** How far over it is, 0 upright to π/2 on its side, and how fast that's changing. */
+  tip: number;
+  spin: number;
+  /** Bounces left on landing. */
+  bounces: number;
   smoke: THREE.Mesh[];
 }
 
@@ -500,42 +509,143 @@ export function createCar(color: string, stripe: string): Car {
     return m;
   });
   bake(g, [], owned);
-  return { group: g, body, heading: 0, wrecked: false, t: 0, from: new THREE.Vector3(), push: new THREE.Vector3(), roll: 1, smoke };
+  return { group: g, body, heading: 0, wrecked: false, pose: 'upright', t: 0, base: new THREE.Vector3(), side: 1, tip: 0, spin: 0, bounces: 2, smoke };
 }
 
-/** Knocks the jeep away from `by`, rolling it onto its roof. */
-export function wreckCar(car: Car, by: THREE.Vector3, scene: THREE.Scene) {
+/** Half the jeep's width at the edge it tips over on (the tyre walls and body sides), its height and half its length. */
+const CAR_HALF_W = 1.2;
+const CAR_HALF_L = 2.6;
+/** Tipped this far over, its weight is past the edge and it falls the rest of the way on its own. */
+const TIP_BALANCE = Math.atan2(CAR_HALF_W, 1.25);
+/** How fast a dinosaur can shove a jeep along, on its wheels and lying on its side, in metres a second. */
+const PUSH_UPRIGHT = 1.8;
+const PUSH_SIDE = 0.9;
+
+/** Puts a jeep down at `at`, on its wheels, facing `heading`. */
+export function placeCar(car: Car, at: THREE.Vector3, heading: number) {
+  car.base.copy(at);
+  car.heading = heading;
+  car.pose = 'upright';
+  car.wrecked = false;
+  car.tip = 0;
+  setCar(car);
+}
+
+/** The group from the base: turned to the heading and rolled `tip` over about the edge it's going over on. */
+function setCar(car: Car) {
+  const g = car.group;
+  const a = car.tip;
+  // Rolling about the bottom edge at x = side·W: that edge stays put while the rest swings over it.
+  const ox = car.side * CAR_HALF_W * (1 - Math.cos(a));
+  const oy = CAR_HALF_W * Math.sin(a);
+  const c = Math.cos(car.heading);
+  const sn = Math.sin(car.heading);
+  g.position.set(car.base.x + ox * c, car.base.y + oy, car.base.z - ox * sn);
+  g.rotation.set(0, car.heading, -car.side * a);
+}
+
+/**
+ * Bitten from `by`: the jaws clamp on the near side and heave it up, and it tips over onto its far side.
+ * Its weight goes over the edge a moment later and it crashes down, bouncing (updateCar reports that).
+ */
+export function tipCar(car: Car, by: THREE.Vector3, scene: THREE.Scene) {
+  if (car.pose !== 'upright') return;
   car.wrecked = true;
+  car.pose = 'tipping';
   car.t = 0;
-  car.from.copy(car.group.position);
-  car.push.subVectors(car.group.position, by).setY(0).normalize().multiplyScalar(6);
-  // Roll to whichever side it was hit from.
-  const side = new THREE.Vector3(Math.cos(car.heading), 0, -Math.sin(car.heading));
-  car.roll = car.push.dot(side) >= 0 ? -1 : 1;
+  // Over onto the side away from the dinosaur: its +x axis is (cos h, -sin h).
+  const across = (car.base.x - by.x) * Math.cos(car.heading) - (car.base.z - by.z) * Math.sin(car.heading);
+  car.side = across >= 0 ? 1 : -1;
+  car.tip = 0;
+  // The heave: enough to lift it well past its balance point.
+  car.spin = 2.9;
+  car.bounces = 2;
   car.smoke.forEach((m) => scene.add(m));
 }
 
-export function updateCar(car: Car, dt: number, t: number) {
-  if (!car.wrecked) return;
+/**
+ * The jeep's footprint on the ground, for pushing it about: centre, its long axis, and half its length
+ * and width (lying on its side it's as wide as it was tall, off to the side it fell on).
+ */
+export function carFootprint(car: Car, out: { x: number; z: number; ux: number; uz: number; hl: number; hw: number }) {
+  const ux = Math.sin(car.heading);
+  const uz = Math.cos(car.heading);
+  const off = car.pose === 'upright' ? 0 : car.side * (CAR_HALF_W + CAR_ROOF / 2) * Math.min(1, car.tip / (Math.PI / 2));
+  out.x = car.base.x + off * uz;
+  out.z = car.base.z - off * ux;
+  out.ux = ux;
+  out.uz = uz;
+  out.hl = CAR_HALF_L;
+  out.hw = car.pose === 'upright' ? CAR_HALF_W + 0.05 : CAR_ROOF / 2;
+  return out;
+}
+
+/** Height of the jeep's top above its base: what a dinosaur has to clear to stand on it. */
+export function carTop(car: Car) {
+  return car.pose === 'upright' ? CAR_ROOF : CAR_HALF_W * 2 + 0.2;
+}
+
+/**
+ * A dinosaur shoving the jeep: moves it by (dx, dz) at most its pushing speed allows this frame (slower on
+ * its side, scraping along), turning it a little when shoved off-centre (`twist`). Returns how far it went.
+ */
+export function pushCar(car: Car, dx: number, dz: number, twist: number, dt: number, block?: (q: THREE.Vector3, r: number) => void) {
+  if (car.pose === 'tipping') return 0;
+  const max = (car.pose === 'upright' ? PUSH_UPRIGHT : PUSH_SIDE) * dt;
+  const d = Math.hypot(dx, dz);
+  if (d < 1e-6) return 0;
+  const k = Math.min(1, max / d);
+  const x0 = car.base.x;
+  const z0 = car.base.z;
+  car.base.x += dx * k;
+  car.base.z += dz * k;
+  car.heading += THREE.MathUtils.clamp(twist, -1, 1) * 0.6 * dt;
+  // Trees and walls stop it.
+  block?.(car.base, 1.6);
+  car.base.y = groundY(car.base.x, car.base.z);
+  setCar(car);
+  // How far it really went the way it was pushed.
+  return Math.max(0, ((car.base.x - x0) * dx + (car.base.z - z0) * dz) / d);
+}
+
+/** Animates a tipping jeep and the smoke off a wreck. Returns true on the frame it crashes down on its side. */
+export function updateCar(car: Car, dt: number, t: number): boolean {
+  if (!car.wrecked) return false;
   car.t += dt;
-  const k = Math.min(1, car.t / 0.9);
-  const ease = 1 - (1 - k) ** 3;
+  let landed = false;
+  if (car.pose === 'tipping') {
+    // Short of the balance point it would settle back; past it, gravity takes it over, faster and faster.
+    car.spin += (car.tip < TIP_BALANCE ? -6 : 14) * Math.sin(Math.abs(car.tip - TIP_BALANCE) + 0.15) * dt;
+    car.tip += car.spin * dt;
+    if (car.tip >= Math.PI / 2) {
+      // Down on its side: a bounce or two, smaller each time.
+      car.tip = Math.PI / 2;
+      landed = car.bounces === 2;
+      if (!car.bounces || car.spin < 0.6) {
+        car.pose = 'side';
+        car.spin = 0;
+      } else {
+        car.spin = -car.spin * 0.28;
+        car.bounces--;
+      }
+    }
+    if (car.tip < 0) {
+      // Not heaved far enough (it can't happen with the bite's heave, but just in case): back on its wheels.
+      car.tip = 0;
+      car.spin = Math.abs(car.spin) * 0.5 + 2;
+    }
+    car.base.y = groundY(car.base.x, car.base.z);
+    setCar(car);
+  }
   const g = car.group;
-  g.position.x = car.from.x + car.push.x * ease;
-  g.position.z = car.from.z + car.push.z * ease;
-  // The roof crumples as it lands on it, and the body comes to rest a little twisted.
-  const squash = 1 - 0.14 * ease;
-  g.scale.set(1 + 0.04 * ease, squash, 1);
-  // Up in an arc, then resting on its roof gear.
-  g.position.y = groundY(g.position.x, g.position.z) + Math.sin(Math.PI * k) * 3 + CAR_ROOF * squash * ease;
-  g.rotation.set(0.07 * car.roll * ease, car.heading, car.roll * Math.PI * ease);
-  if (k >= 1 && car.body.color.getHex() !== 0x3a3a3a) car.body.color.lerp(new THREE.Color('#3a3a3a'), Math.min(1, dt * 3));
+  if (car.pose === 'side' && car.body.color.getHex() !== 0x3a3a3a) car.body.color.lerp(new THREE.Color('#3a3a3a'), Math.min(1, dt * 2));
   for (const m of car.smoke) {
     const s = (t * 0.45 + m.userData.k) % 1;
-    m.visible = k >= 0.6;
-    m.position.set(g.position.x + Math.sin(s * 7 + m.userData.k * 9) * 0.6, g.position.y - 1.6 + s * 6, g.position.z);
+    m.visible = car.t > 0.5;
+    m.position.set(g.position.x + Math.sin(s * 7 + m.userData.k * 9) * 0.6, g.position.y + 0.4 + s * 5, g.position.z);
     m.scale.setScalar(0.5 + s * 1.6);
   }
+  return landed;
 }
 
 // ===================== People =====================
@@ -558,8 +668,12 @@ export interface Person {
   shins: THREE.Object3D[];
   forearms: THREE.Object3D[];
   alert: THREE.Sprite;
-  /** idle: standing about (or, for rangers, walking a patrol); panic: running; down: knocked over; gone: run off. */
-  state: 'idle' | 'panic' | 'down' | 'gone';
+  /**
+   * idle: standing about (or, for rangers, walking a patrol); panic: running; down: knocked over; gone: run
+   * off. Rangers only: held: snatched up in a dinosaur's jaws by their jacket (posed by security.ts); out:
+   * thrown down and out cold, lying there for the rest of the level.
+   */
+  state: 'idle' | 'panic' | 'down' | 'gone' | 'held' | 'out';
   /** Seconds in the current state. */
   t: number;
   heading: number;
@@ -893,8 +1007,9 @@ export function posePerson(p: Person, dt: number, t: number, speed: number) {
   p.t += dt;
   const g = p.group;
   const ranger = p.kind === 'ranger';
-  if (p.state === 'down') {
-    // Topple over backwards, lie still, then scramble up and run.
+  if (p.state === 'held') return;
+  if (p.state === 'down' || p.state === 'out') {
+    // Topple over backwards, lie still, then scramble up and run (or, out cold, stay down).
     const k = Math.min(1, p.t / 0.35);
     g.rotation.x = -(Math.PI / 2 - 0.1) * k * k;
     g.position.y += Math.sin(Math.PI * k) * 0.02;
@@ -902,7 +1017,7 @@ export function posePerson(p: Person, dt: number, t: number, speed: number) {
     p.shins.forEach((s, i) => (s.rotation.x = (i ? 0.7 : 0.2) * k));
     p.arms.forEach((a, i) => a.rotation.set(-0.4 * k, 0, (i ? 1 : -1) * 1.1 * k));
     p.forearms.forEach((f) => f.rotation.set(-0.5 * k, 0, 0));
-    if (p.t > DOWN_FOR) {
+    if (p.state === 'down' && p.t > DOWN_FOR) {
       p.state = 'panic';
       p.t = 0;
       g.rotation.x = 0;
@@ -968,7 +1083,7 @@ export function scare(p: Person): boolean {
 
 /** Knocks a person flat, falling away from `from`. They get up after a moment and run. True if they were on their feet. */
 export function knockDown(p: Person, from: THREE.Vector3): boolean {
-  if (p.state === 'down' || p.state === 'gone') return false;
+  if (p.state !== 'idle' && p.state !== 'panic') return false;
   const q = p.group.position;
   // Face the dinosaur, so falling backwards is falling away from it.
   p.heading = Math.atan2(from.x - q.x, from.z - q.z);

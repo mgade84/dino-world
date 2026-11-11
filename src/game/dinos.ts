@@ -80,6 +80,12 @@ export interface Rig {
   lean: number;
   /** Quadruped: the gait and the body roll are timed to four feet instead of two. */
   quad: boolean;
+  /** Seconds left of a head shake with something held in the jaws (set by the game; counts down here). */
+  thrash: number;
+  /** How long the current head shake lasts in all. */
+  thrashFor: number;
+  /** Counts down from 1 while heaving something over with the jaws: the head hauls up and back, the body rears. */
+  heave: number;
 }
 
 type V3 = [number, number, number];
@@ -628,7 +634,7 @@ function rig(root: THREE.Group, body: THREE.Group, b: Body, o: Partial<Rig>): Ri
   return {
     root, body, head: b.fwd[b.fwd.length - 1], legs: [], tail: b.tail, neck: b.fwd.slice(1, -1), jaw: null, chest: b.fwd[0],
     radius: 2, stepRate: 6, roarFor: 1.6, bob: 0.1, phase: 0, roaring: 0, biting: 0, lastStep: 0, wings: [], wingMode: 0, spread: 0, crouch: 0, air: 0,
-    sway: 0.06, tailWag: 1, lean: 0, quad: false,
+    sway: 0.06, tailWag: 1, lean: 0, quad: false, thrash: 0, thrashFor: 1, heave: 0,
     ...o,
   };
 }
@@ -1038,26 +1044,35 @@ export function animate(r: Rig, dt: number, move: number, t: number, speed = 0):
   });
   // The neck undoes the pelvis yaw, so the head keeps pointing where the animal is going, and looks around idly.
   const nn = r.neck.length;
+  // Shaking something held in the jaws: the head lifts and whips side to side, the whole neck in it, the
+  // swing building up and dying away, each neck bone a little behind the one before.
+  const th = r.thrash > 0 ? Math.sin(Math.PI * (1 - r.thrash / r.thrashFor)) : 0;
+  r.thrash = Math.max(0, r.thrash - dt);
+  // Heaving: a quick haul up and back with the jaws shut, held a moment, then let go.
+  const hv = r.heave > 0 ? Math.sin(Math.PI * Math.min(1, (1 - r.heave) * 1.4)) : 0;
+  r.heave = Math.max(0, r.heave - dt / 0.7);
   r.neck.forEach((seg, i) => {
-    seg.rotation.y = -yaw / nn + Math.sin(t * 0.7 + i * 0.5) * 0.04 * (0.4 + 0.6 * still);
+    seg.rotation.y = -yaw / nn + Math.sin(t * 0.7 + i * 0.5) * 0.04 * (0.4 + 0.6 * still) + (Math.sin(t * 19 - i * 0.5) * 0.5 * th) / nn;
   });
   // Roar: rear the head back and open wide.
   const roar = r.roaring > 0 ? Math.sin(Math.PI * Math.min(1, (1 - r.roaring) * 1.6)) : 0;
   r.roaring = Math.max(0, r.roaring - dt / r.roarFor);
-  r.head.rotation.y = 0;
+  r.head.rotation.y = Math.sin(t * 19 - nn * 0.5) * 0.28 * th;
   r.head.userData.base ??= r.head.rotation.x;
   // Bite: lunge forward and down, jaws wide open, then snap shut at the halfway point.
   const lunge = r.biting > 0 ? Math.sin(Math.PI * (1 - r.biting)) : 0;
   const gape = r.biting > 0.5 ? Math.sin(Math.PI * (1 - r.biting) * 2) : 0;
   r.biting = Math.max(0, r.biting - dt / 0.45);
-  r.body.position.z = lunge * 0.8;
-  r.body.rotation.x = lunge * 0.12 - roar * 0.08 + r.lean * (1 - r.spread);
+  r.body.position.z = lunge * 0.8 - hv * 0.5;
+  r.body.rotation.x = lunge * 0.12 - roar * 0.08 - hv * 0.12 + r.lean * (1 - r.spread);
   // The head stays level against the body's bob, as a predator's does: it nods against the dip of each
   // step (twice per cycle in a biped), and the jaw hangs a little open at a flat-out run.
   const nod = r.quad ? 0 : -Math.cos(r.phase * 2) * 0.025 * move;
-  r.head.rotation.x = r.head.userData.base - roar * 0.45 + lunge * 0.3 + nod + Math.sin(t * 1.3) * 0.015;
+  r.head.rotation.x = r.head.userData.base - roar * 0.45 + lunge * 0.3 + nod + Math.sin(t * 1.3) * 0.015 - th * 0.25 - hv * 0.55;
+  r.body.rotation.z += Math.sin(t * 19 + 1.2) * 0.04 * th;
   const pant = Math.max(0, move - 0.7) * 0.25;
-  if (r.jaw) r.jaw.rotation.x = Math.max(roar * 0.7, gape * 0.85, pant);
+  // Jaws clamped shut on whatever they hold.
+  if (r.jaw) r.jaw.rotation.x = th > 0 || hv > 0 ? 0.08 : Math.max(roar * 0.7, gape * 0.85, pant);
   // Wings: on the ground they fold and the animal walks on them, the wing arm reaching down in front
   // like a forelimb and stepping in sequence with the hind legs; in the air they spread, beating in flight.
   if (r.wings.length) {

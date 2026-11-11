@@ -6,10 +6,10 @@ import { buildSettings } from '../settings';
 import { animate, buildDino, disposeDinoAssets, DINOS, type DinoSpec, type Rig } from './dinos';
 import { buildWorld, coastDist, floorY, groundY, HALF, MAP, rng, CAGE_SPOTS, POWER, useMap } from './world';
 import { getMap, trialMap, type MapDef } from './maps';
-import { CAGE, CAGE_HITS, CAR_COLORS, createCage, createCar, createPerson, disposePark, knockDown, posePerson, scare, updateCar, wreckCar, type Cage, type Car, type Person } from './park';
+import { CAGE, CAGE_HITS, CAR_COLORS, carFootprint, carTop, createCage, createCar, createPerson, disposePark, knockDown, placeCar, posePerson, pushCar, scare, tipCar, updateCar, type Cage, type Car, type Person } from './park';
 import { createTown, type Building } from './buildings';
 import { createFences } from './fences';
-import { createSecurity } from './security';
+import { createSecurity, HOLD_FOR } from './security';
 import { createStation, type Generator } from './station';
 import { createDocks } from './docks';
 import { createSeeThrough } from './seethrough';
@@ -25,7 +25,7 @@ import './dino.css';
 /** Rampage: rangers on the island. */
 const RAMPAGE_RANGERS = 4;
 /** Rampage scoring: points per kind of mayhem, the combo window and cap, and how often reinforcements come. */
-const POINTS: Record<string, number> = { smash: 100, scare: 25, knock: 50, free: 200, destroy: 500, generators: 400, sink: 300, fence: 50 };
+const POINTS: Record<string, number> = { smash: 100, scare: 25, knock: 50, snatch: 150, free: 200, destroy: 500, generators: 400, sink: 300, fence: 50 };
 const COMBO = { window: 4, max: 5 };
 const HEAT = { every: 2500, max: 6 };
 /** Energy lost to a dart, and to a live fence. Energy comes back after a few seconds without a hit. */
@@ -463,9 +463,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     }
     sites.forEach((p, i) => {
       const car = createCar(CAR_COLORS[i % CAR_COLORS.length], i % 2 ? '#ffffff' : '#2f2f2f');
-      car.heading = headings[i] ?? placeRand() * Math.PI * 2;
-      car.group.position.copy(p);
-      car.group.rotation.y = car.heading;
+      placeCar(car, p, headings[i] ?? placeRand() * Math.PI * 2);
       scene.add(car.group);
       cars.push(car);
       if (!level) return;
@@ -770,7 +768,12 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   /** The nearest bars within biting reach, whichever way the dinosaur faces: its own cage from inside, others' from outside. */
   const facing = new THREE.Vector3();
   let biteHeading = 0;
-  type BiteTarget = { cage: Cage; side: number; captive: Captive | null; building?: undefined } | { building: Building; heading: number };
+  type BiteTarget =
+    | { cage: Cage; side: number; captive: Captive | null; building?: undefined; ranger?: undefined; car?: undefined; gen?: undefined }
+    | { building: Building; heading: number; ranger?: undefined; car?: undefined; gen?: undefined }
+    | { ranger: number; building?: undefined; car?: undefined; gen?: undefined }
+    | { car: Car; at: THREE.Vector3; building?: undefined; ranger?: undefined; gen?: undefined }
+    | { gen: Generator; building?: undefined; ranger?: undefined; car?: undefined };
   function biteTarget(): BiteTarget | null {
     if (!player) return null;
     const p = player.root.position;
@@ -785,6 +788,21 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       const side = c.cage.nearSide(p, facing, reach, false, -2);
       if (side >= 0) return { cage: c.cage, side, captive: c };
     }
+    // A ranger within lunging reach: snatch them up.
+    const r = security ? security.biteable(p, facing, reach + 1.5) : -1;
+    if (r >= 0) return { ranger: r };
+    // A jeep on its wheels, alongside and roughly ahead: get the jaws into it and heave it over.
+    for (const car of cars) {
+      if (car.pose !== 'upright') continue;
+      const n = carContact(car, p, fp);
+      if (n.d > reach || (n.d > 1e-3 && -(n.x * facing.x + n.z * facing.z) < 0.4)) continue;
+      return { car, at: new THREE.Vector3(n.cx, 0, n.cz) };
+    }
+    // A running generator, where the level lets them be wrecked: tear into its housing.
+    if (canBlackOut) {
+      const g = station.biteable(p, facing, reach);
+      if (g) return { gen: g };
+    }
     // A building close by and roughly ahead: bite into its nearest wall.
     for (const b of town.buildings) {
       const dx = THREE.MathUtils.clamp(p.x, b.minX, b.maxX) - p.x;
@@ -796,13 +814,111 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     return null;
   }
   const jaw = new THREE.Vector3();
+  /** A jeep's footprint, and the nearest point of it to the dinosaur: its distance and the way out from it. */
+  const fp = { x: 0, z: 0, ux: 0, uz: 1, hl: 1, hw: 1 };
+  const contact = { d: 0, x: 0, z: 0, cx: 0, cz: 0 };
+  function carContact(car: Car, at: THREE.Vector3, out: typeof fp) {
+    carFootprint(car, out);
+    const dx = at.x - out.x;
+    const dz = at.z - out.z;
+    // Its axes: along (ux, uz) and across (uz, -ux).
+    const along = THREE.MathUtils.clamp(dx * out.ux + dz * out.uz, -out.hl, out.hl);
+    const across = THREE.MathUtils.clamp(dx * out.uz - dz * out.ux, -out.hw, out.hw);
+    contact.cx = out.x + along * out.ux + across * out.uz;
+    contact.cz = out.z + along * out.uz - across * out.ux;
+    let nx = at.x - contact.cx;
+    let nz = at.z - contact.cz;
+    let d = Math.hypot(nx, nz);
+    if (d < 1e-4) {
+      // Right on top of it: out the way from its middle.
+      nx = dx;
+      nz = dz;
+      d = 0;
+    }
+    const l = Math.hypot(nx, nz) || 1;
+    contact.d = d;
+    contact.x = nx / l;
+    contact.z = nz / l;
+    return contact;
+  }
+  const jawAt = new THREE.Vector3();
 
   /** The roar button: bites the bars when close to them, otherwise roars. */
   function act() {
-    if (!player || picking || paused || sedated > 0 || player.roaring > ROAR_AGAIN || player.biting > 0) return;
+    if (!player || picking || paused || sedated > 0 || player.roaring > ROAR_AGAIN || player.biting > 0 || player.thrash > 0) return;
     const target = biteTarget();
     if (!target || !grounded) return roar();
     player.biting = 1;
+    if (target.gen) {
+      // Jaws into the generator's housing, a worry of the head to tear a panel away. BITES of these kill it.
+      const g = target.gen;
+      const p = player.root.position;
+      biteHeading = Math.atan2(THREE.MathUtils.clamp(p.x, g.minX, g.maxX) - p.x, THREE.MathUtils.clamp(p.z, g.minZ, g.maxZ) - p.z);
+      if (!Number.isFinite(biteHeading)) biteHeading = heading;
+      sfx.chomp();
+      timers.push(
+        window.setTimeout(() => {
+          if (!alive || !player) return;
+          player.head.updateWorldMatrix(true, false);
+          jawAt.set(0, -0.2, player.radius * 0.45).applyMatrix4(player.head.matrixWorld);
+          const got = station.bite(g, jawAt);
+          if (!got) return;
+          player.thrash = player.thrashFor = 0.55;
+          sfx.crunch();
+          sfx.clang();
+          sfx.zap();
+          shake = Math.max(shake, 0.45);
+          if (got === 'hit') return;
+          sfx.collapse();
+          shake = 1;
+          progress('generators');
+          if (station.running === 0) blackout();
+          else radio({ en: STRINGS.en.radioGenerator, da: STRINGS.da.radioGenerator });
+        }, 220),
+      );
+      return;
+    }
+    if (target.car) {
+      // Jaws into the side of the jeep, then a heave up and back: it goes over onto its far side.
+      const car = target.car;
+      const p = player.root.position;
+      biteHeading = Math.atan2(target.at.x - p.x, target.at.z - p.z);
+      sfx.chomp();
+      timers.push(
+        window.setTimeout(() => {
+          if (!alive || !player || car.pose !== 'upright') return;
+          if (carContact(car, player.root.position, fp).d > player.radius + 4) return;
+          tipCar(car, player.root.position, scene);
+          player.heave = 1;
+          sfx.clang();
+          shake = Math.max(shake, 0.3);
+        }, 220),
+      );
+      return;
+    }
+    if (target.ranger !== undefined) {
+      if (!security) return;
+      // Lunge at the ranger; if they're still there when the jaws close, they're caught by the jacket,
+      // shaken like a rag and flung aside (security.ts does their part).
+      const i = target.ranger;
+      const at = security.where(i);
+      const p = player.root.position;
+      biteHeading = Math.atan2(at.x - p.x, at.z - p.z);
+      sfx.chomp();
+      timers.push(
+        window.setTimeout(() => {
+          if (!alive || !player || !security) return;
+          if (!security.snatch(i, player.root.position, player.radius + 5)) return;
+          player.thrash = player.thrashFor = HOLD_FOR;
+          sfx.scream();
+          sfx.thud();
+          shake = Math.max(shake, 0.45);
+          tension = 1;
+          award('snatch');
+        }, 220),
+      );
+      return;
+    }
     if (target.building) {
       // Into the wall: the jaws close on whatever is nearest them and tear it out.
       const b = target.building;
@@ -988,6 +1104,12 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
             sfx.thud();
             shake = Math.max(shake, 0.3);
           },
+          onLand: (at) => {
+            // A flung ranger hits the ground: everyone nearby has seen enough.
+            sfx.thud();
+            shake = Math.max(shake, 0.25);
+            for (const pp of people) if (Math.hypot(pp.group.position.x - at.x, pp.group.position.z - at.z) < 20) frighten(pp);
+          },
         },
       )
     : null;
@@ -1152,20 +1274,11 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         }
       }
       zapCool = Math.max(0, zapCool - dt);
-      // Generators: a charge damages one; the last one dying blacks out the island.
-      // Only Blackout (and Rampage) lets the generators be wrecked: elsewhere the story needs the power on.
-      if (touchedGen && !high && free && charge > CHARGE && canBlackOut) {
+      // Generators are bitten to bits (see act()); a charge into one just bounces off with a clang.
+      if (touchedGen && !high && free && charge > CHARGE) {
         vel.multiplyScalar(-0.25);
         sfx.clang();
-        sfx.zap();
-        shake = Math.max(shake, 0.5);
-        if (station.hit(touchedGen, p)) {
-          sfx.collapse();
-          shake = 1;
-          progress('generators');
-          if (station.running === 0) blackout();
-          else radio({ en: STRINGS.en.radioGenerator, da: STRINGS.da.radioGenerator });
-        }
+        shake = Math.max(shake, 0.35);
       }
       // Boats: ram one, moored or under way, and over it goes.
       if (!high && free) {
@@ -1281,7 +1394,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         rippleIn = 0.3;
       }
 
-      // Jeeps: a run or a jump into one wrecks it. Visitors run when the dinosaur comes close.
+      // Jeeps: bitten, they tip over (see act()); walked into, upright or on their side, they're shoved
+      // slowly along, the dinosaur slowed to their pace. Visitors run when the dinosaur comes close.
       const best = { d: Infinity, at: null as THREE.Vector3 | null };
       const consider = (q: THREE.Vector3) => {
         const d = Math.hypot(q.x - p.x, q.z - p.z);
@@ -1291,22 +1405,33 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         }
       };
       for (const car of cars) {
-        updateCar(car, dt, t);
-        if (car.wrecked) continue;
-        const q = car.group.position;
-        away.set(p.x - q.x, 0, p.z - q.z);
-        const d = away.length();
-        const reach = player.radius + 2.1;
-        if (free && d < reach && p.y < q.y + 3.5 && (speed > 3 || vy < -4)) {
-          wreckCar(car, p, scene);
+        if (updateCar(car, dt, t)) {
+          // Crashing down on its side.
           sfx.crash();
-          shake = 0.6;
+          shake = Math.max(shake, 0.6);
+          const q = car.group.position;
           for (const pp of people) if (Math.hypot(pp.group.position.x - q.x, pp.group.position.z - q.z) < 14) frighten(pp);
           progress('smash');
-        } else if (d < reach && p.y < q.y + 2.6) {
-          p.addScaledVector(away.divideScalar(d || 1), reach - d);
         }
-        if (free) consider(q);
+        if (free && !car.wrecked) consider(car.group.position);
+        if (p.y > car.base.y + carTop(car) - 0.4) continue;
+        const r = player.radius;
+        const n = carContact(car, p, fp);
+        if (n.d >= r) continue;
+        const pen = r - n.d;
+        // Pushing only while walking into it; just standing against it, it stays put.
+        const into = -(vel.x * n.x + vel.z * n.z);
+        let moved = 0;
+        if (into > 0.5) {
+          // Shoved off-centre it turns a little: the twist of the push about the footprint's middle.
+          const twist = ((n.cz - fp.z) * -n.x - (n.cx - fp.x) * -n.z) / fp.hl;
+          moved = pushCar(car, -n.x * pen, -n.z * pen, twist, dt, (q, rr) => {
+            world.collide(q, rr);
+            town.collide(q, rr);
+          });
+        }
+        p.x += n.x * (pen - moved);
+        p.z += n.z * (pen - moved);
       }
       for (const pp of people) {
         if (pp.state === 'gone') continue;
@@ -1395,7 +1520,10 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     docks.update(dt, t, docksEvents);
     if (player) {
       const p = player.root.position;
-      security?.update(dt, t, { pos: p, radius: player.radius, speed: Math.hypot(vel.x, vel.z), free, ignore: sedated > 0 || finished || intro >= 0 });
+      // The jaws: a little ahead of and below the head bone, so a held ranger follows every shake of the head.
+      player.head.updateWorldMatrix(true, false);
+      jawAt.set(0, -0.2, player.radius * 0.45).applyMatrix4(player.head.matrixWorld);
+      security?.update(dt, t, { pos: p, radius: player.radius, speed: Math.hypot(vel.x, vel.z), free, ignore: sedated > 0 || finished || intro >= 0, jaw: jawAt, heading });
       updateEnergy(dt);
       if (scoreEl && combo > 1 && t - lastScore > COMBO.window) {
         combo = 0;
