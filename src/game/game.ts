@@ -22,7 +22,6 @@ import { createWeather, STORM } from './weather';
 import './dino.css';
 
 /** Jeeps (each with a person beside it) in Rampage on a map without any, respawned once all are wrecked and scared. */
-const RAMPAGE_TARGETS = 10;
 /** Rampage: rangers on the island. */
 const RAMPAGE_RANGERS = 4;
 /** Rampage scoring: points per kind of mayhem, the combo window and cap, and how often reinforcements come. */
@@ -430,9 +429,12 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   // ---- Jeeps to smash and visitors to scare, one visitor beside each jeep ----
   let cars: Car[] = [];
   let people: Person[] = [];
-  /** Enough jeeps (and a person by each) to meet the level's goals with a couple to spare. */
+  /**
+   * Enough jeeps (and a person by each) to meet the level's goals with a couple to spare. Rampage has exactly
+   * what the map editor shows: the map's jeeps and visitors, nothing added.
+   */
   const targetCount = () => {
-    if (!level) return MAP.cars?.length ? 0 : RAMPAGE_TARGETS;
+    if (!level) return 0;
     const need = Math.max(0, ...goals.map((g) => (g.kind === 'smash' || g.kind === 'scare' ? g.n : 0)));
     return need ? need + 2 : 4;
   };
@@ -445,7 +447,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     people.forEach((pp) => scene.remove(pp.group));
     cars = [];
     people = [];
-    // The map's jeeps, all of them, then random ones if the level needs more (or the map has none).
+    // The map's jeeps, all of them, then random ones if a level's goals need more.
     const sites: THREE.Vector3[] = [];
     const headings: number[] = [];
     for (const c of MAP.cars ?? []) {
@@ -466,6 +468,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       car.group.rotation.y = car.heading;
       scene.add(car.group);
       cars.push(car);
+      if (!level) return;
       const person = createPerson(placeRand);
       const a = placeRand() * Math.PI * 2;
       const at = person.group.position.set(p.x + Math.cos(a) * 4, 0, p.z + Math.sin(a) * 4);
@@ -493,8 +496,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       scene.add(person.group);
       people.push(person);
     }
-    // Main Street has its own crowd, on the pavements, wherever buildings are a goal (and in Rampage).
-    if (!level || goals.some((g) => g.kind === 'destroy')) {
+    // Main Street has its own crowd, on the pavements, wherever buildings are a goal.
+    if (level && goals.some((g) => g.kind === 'destroy')) {
       for (let k = 0; k < 8; k++) {
         const person = createPerson(placeRand);
         person.group.position.copy(town.pavement(placeRand));
