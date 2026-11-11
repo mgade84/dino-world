@@ -29,8 +29,8 @@ function route() {
   const go = (to: string) => () => (location.hash = '#/' + to);
   if (id === 'settings') unmount = mountSettings(app, home, route);
   else if (id === 'story' || id === 'rampage') unmount = mountGame(app, dino, id, home);
-  else if (id.startsWith('rampage/try/')) {
-    // Rampage on a map from the editor, as it stands (unsaved changes and all); leaving goes back to the editor.
+  else if (import.meta.env.DEV && id.startsWith('rampage/try/')) {
+    // Rampage on a map from the editor (dev server only, like the editor), as it stands (unsaved changes and all); leaving goes back to the editor.
     const mapId = id.slice('rampage/try/'.length);
     setTrial(drafts()[mapId] ?? MAPS.find((m) => m.id === mapId) ?? null);
     const close = mountGame(app, dino, 'rampage', go('map/' + mapId));
@@ -38,8 +38,10 @@ function route() {
       close();
       setTrial(null);
     };
-  } else if (id === 'map' || id.startsWith('map/')) {
-    // The map editor (src/game/maps/); it loads Three.js, so it loads lazily.
+  } else if (import.meta.env.DEV && (id === 'map' || id.startsWith('map/'))) {
+    // The map editor (src/game/maps/), on the dev server only: `import.meta.env.DEV` is false in a
+    // production build, so this branch and the editor's chunk are dropped from it entirely. It loads
+    // Three.js, so it loads lazily.
     let gone = false;
     let close: (() => void) | null = null;
     import('./game/mapedit').then((m) => {
