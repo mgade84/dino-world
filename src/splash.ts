@@ -63,18 +63,15 @@ export function mountSplash(
     </div>
 
     <div class="sp-title">
-      <h1>${L(def.title)}</h1>
+      <div class="sp-logo"><h1>${L(def.title)}</h1><span class="sp-beta">${s.beta}</span></div>
       <p>${s.tagline}</p>
     </div>
 
     <nav class="sp-menu">
       <button class="sp-item" data-go="story"><b>${s.story}</b><small>${s.storySub}</small></button>
       <button class="sp-item" data-go="rampage" ${canRampage ? '' : 'disabled'}><b>${s.rampage}</b><small>${canRampage ? (rampageBest() ? s.best(rampageBest().toLocaleString()) : s.rampageSub) : s.rampageLocked}</small></button>
-    </nav>
-
-    <button class="round-btn sp-gear" aria-label="${t.settings}">
-      <svg class="sp-cog" viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.5 7.5 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-1.7-1L15 3.5h-4l-.4 2.5a7.6 7.6 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.5 7.5 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.6 7.6 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7.6 7.6 0 0 0 1.7-1l2.4 1 2-3.4zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg>
-    </button>`;
+      <button class="sp-item" data-go="settings"><b>${t.settings}</b><small>${s.settingsSub}</small></button>
+    </nav>`;
   app.appendChild(el);
 
   const timers: number[] = [];
@@ -93,16 +90,15 @@ export function mountSplash(
   el.querySelector('.sp-menu')!.addEventListener('click', (e) => {
     const b = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-go]');
     if (!b || b.disabled || leaving) return;
+    if (b.dataset.go === 'settings') {
+      sfx.tap();
+      go.settings();
+      return;
+    }
     leaving = true;
     sfx.roar(1.3);
     el.classList.add('going');
     timers.push(window.setTimeout(b.dataset.go === 'story' ? go.story : go.rampage, 700));
-  });
-
-  el.querySelector('.sp-gear')!.addEventListener('click', () => {
-    if (leaving) return;
-    sfx.tap();
-    go.settings();
   });
 
   return () => {

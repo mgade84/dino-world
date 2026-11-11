@@ -242,6 +242,28 @@
   filter: drop-shadow(0 6px 0 rgba(0, 0, 0, 0.6)) drop-shadow(0 0 28px rgba(0, 0, 0, 0.8));
 }
 
+.sp-logo {
+  position: relative;
+  display: inline-block;
+}
+
+/* A stamp across the title's top-right corner. */
+.sp-beta {
+  position: absolute;
+  top: -0.2em;
+  right: -1.6em;
+  padding: 0.2em 1.4em;
+  font: 900 clamp(13px, 2vw, 22px) / 1 var(--font-display);
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: #1a1206;
+  background: linear-gradient(180deg, #f4c04a, #d9902a);
+  border: 2px solid rgba(26, 18, 6, 0.55);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+  transform: rotate(18deg);
+  transform-origin: center;
+}
+
 .sp-title p {
   display: inline-flex;
   align-items: center;
@@ -353,20 +375,6 @@
   40% { transform: translate(4px, -3px); }
   60% { transform: translate(-3px, 2px); }
   80% { transform: translate(2px, -1px); }
-}
-
-.sp-gear {
-  position: absolute;
-  top: calc(var(--sat) + 16px);
-  right: calc(var(--sar) + 16px);
-  z-index: 3;
-}
-
-.round-btn > svg.sp-cog {
-  width: 28px;
-  height: 28px;
-  fill: var(--muted);
-  stroke: none;
 }
 
 @media (max-height: 560px) {
