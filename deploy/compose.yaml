@@ -1,0 +1,47 @@
+# Dino World behind the server's shared Traefik (HTTPS from Let's Encrypt).
+#
+# Don't run this by hand: deploy/deploy.sh builds the image on your machine,
+# loads it onto the server over SSH and copies this file and .env next to it.
+# The domain and login come from deploy/.env, which is never committed.
+#
+# Traefik is set up separately and must be running first: it owns ports
+# 80/443 and the "proxy" network, the "websecure" entrypoint, the "le"
+# certificate resolver and the "secure-headers@file" middleware used below.
+# This container publishes no ports.
+
+name: dinoworld
+
+services:
+  web:
+    # Built on your own machine and loaded onto the VPS by deploy.sh; never pulled.
+    image: dinoworld:latest
+    pull_policy: never
+    restart: unless-stopped
+    # Traefik only routes to a container once it's healthy, so check every 2 s
+    # just after start instead of waiting for the image's 30 s interval.
+    healthcheck:
+      start_period: 30s
+      start_interval: 2s
+    networks: [proxy]
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.dinoworld.loadbalancer.server.port=80
+      # The game, behind basic auth (BASIC_AUTH_USERS in .env: user:bcrypt-hash).
+      - traefik.http.routers.dinoworld.rule=Host(`${DOMAIN:?set DOMAIN in deploy/.env}`)
+      - traefik.http.routers.dinoworld.entrypoints=websecure
+      - traefik.http.routers.dinoworld.tls.certresolver=le
+      - traefik.http.routers.dinoworld.service=dinoworld
+      - traefik.http.routers.dinoworld.middlewares=dinoworld-auth,secure-headers@file
+      - traefik.http.middlewares.dinoworld-auth.basicauth.users=${BASIC_AUTH_USERS:?set BASIC_AUTH_USERS in deploy/.env}
+      - traefik.http.middlewares.dinoworld-auth.basicauth.realm=Dino World
+      # The web app manifest and icons stay public: browsers fetch the manifest
+      # without credentials, and Add to Home Screen needs it and the icons.
+      - traefik.http.routers.dinoworld-public.rule=Host(`${DOMAIN}`) && (Path(`/manifest.webmanifest`) || Path(`/icon-192.png`) || Path(`/icon-512.png`) || Path(`/icon-maskable-512.png`) || Path(`/apple-touch-icon.png`))
+      - traefik.http.routers.dinoworld-public.entrypoints=websecure
+      - traefik.http.routers.dinoworld-public.tls.certresolver=le
+      - traefik.http.routers.dinoworld-public.service=dinoworld
+      - traefik.http.routers.dinoworld-public.middlewares=secure-headers@file
+
+networks:
+  proxy:
+    external: true

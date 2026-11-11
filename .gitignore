@@ -3,3 +3,8 @@ dist
 *.log
 .DS_Store
 .claude/
+
+# Deployment secrets
+deploy/.env
+deploy/.env.*
+!deploy/.env.example
