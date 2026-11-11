@@ -20,6 +20,8 @@ interface Leg {
   bend: number;
   offset: number;
   amp: number;
+  /** How high the foot lifts on its swing (1 is the usual; a sauropod shuffles lower). */
+  lift: number;
   /** Hip height at rest. */
   baseY: number;
   /** Thigh, shin and foot bone as (dy, dz) offsets, for working out how much a bent leg shortens. */
@@ -68,6 +70,16 @@ export interface Rig {
   crouch: number;
   /** 0..1: legs tucked up under the body, for time in the air. */
   air: number;
+  /** The chest bone, swelled for breathing (and the first neck bone, which undoes the swell so the head stays put). */
+  chest: THREE.Bone;
+  /** How far the body shifts sideways over the planted leg each step, in body units. */
+  sway: number;
+  /** How much the tail swings when walking (1 = a heavy theropod; a stiffened raptor tail is less). */
+  tailWag: number;
+  /** Resting pitch of the body (negative is nose up); flyers level out as their wings spread. */
+  lean: number;
+  /** Quadruped: the gait and the body roll are timed to four feet instead of two. */
+  quad: boolean;
 }
 
 type V3 = [number, number, number];
@@ -531,6 +543,16 @@ interface LegDef {
   offset: number;
   amp: number;
   claws?: boolean;
+  /** Semi-erect limbs: the upper segment is bowed outwards by this angle and the lower one brought back in. */
+  splay?: number;
+  /** A raptor's foot: the inner toe is held cocked up off the ground, carrying a big sickle claw. */
+  sickle?: boolean;
+  /** How far the thigh continues above the hip joint, up into the body, so the leg grows out of the torso. */
+  up?: number;
+  /** Muscle bulge of the thigh and shin (1 = straight, column-like segments). */
+  bulge?: number;
+  /** How high the foot lifts on its swing, relative to the usual (1). */
+  lift?: number;
 }
 
 function buildLeg(root: THREE.Object3D, skin: THREE.Material, d: LegDef): Leg {
@@ -540,42 +562,61 @@ function buildLeg(root: THREE.Object3D, skin: THREE.Material, d: LegDef): Leg {
   // Stripe-free skin, turned so the outer side of the leg matches the flank above it.
   skin = limbSkin(skin);
   const uo = d.x >= 0 ? 0 : 1;
-  limb(pivot, skin, p0, p1, d.w[0], d.w[1], 1.1, uo);
+  const out = Math.sign(d.x) || 1;
+  // animate() only ever sets rotation.x on these joints, so a resting roll stays put.
+  if (d.splay) pivot.rotation.z = -out * d.splay;
+  const up = d.up ?? 0;
+  limb(pivot, skin, [p0[0], p0[1] + up, p0[2]], p1, d.w[0], d.w[1], d.bulge ?? 1.1, uo);
   const knee = group(pivot, p1);
-  limb(knee, skin, [0, 0, 0], rel(p1, p2), d.w[1], d.w[2], 1.12, uo);
+  if (d.splay) knee.rotation.z = out * d.splay;
+  limb(knee, skin, [0, 0, 0], rel(p1, p2), d.w[1], d.w[2], d.bulge ?? 1.12, uo);
   const ankle = group(knee, rel(p1, p2));
   limb(ankle, skin, [0, 0, 0], rel(p2, p3), d.w[2], d.w[3], 1.0, uo);
-  // Fill the knee and ankle so the segments flow into each other instead of pinching at the joint.
-  part(knee, GEO.sphere, skin, [d.w[1] * 1.02, d.w[1] * 1.05, d.w[1] * 1.08]);
-  part(ankle, GEO.sphere, skin, [d.w[2] * 1.02, d.w[2] * 1.05, d.w[2] * 1.06]);
+  // Fill the knee and ankle so the segments flow into each other instead of pinching at the joint
+  // (flush with the segments on straight, column-like legs, so no knob shows).
+  const js = d.bulge === 1 ? 0.97 : 1.02;
+  part(knee, GEO.sphere, skin, [d.w[1] * js, d.w[1] * (js + 0.03), d.w[1] * (js + 0.06)]);
+  part(ankle, GEO.sphere, skin, [d.w[2] * js, d.w[2] * (js + 0.03), d.w[2] * (js + 0.04)]);
   const foot = group(ankle, rel(p2, p3));
   // A fleshy pad under the end of the leg, from the heel to the toe joints, sitting on the ground.
   const above = d.y + p3[1];
   const w3 = d.w[3];
   const padH = Math.max(w3 * 0.45, Math.min(above, w3 * 0.7) * 0.6);
   const padY = -above + padH;
+  // With no toes (sauropods) the pad is a broad, round elephant's foot instead.
+  const round = d.toes === 0;
   const pad = new THREE.Mesh(
-    sweep(capped([
-      { p: new THREE.Vector3(0, padY + padH * 0.4, -w3 * 0.6), w: w3 * 0.85, h: padH * 1.15, drop: 0 },
-      { p: new THREE.Vector3(0, padY + padH * 0.15, 0), w: w3 * 1.15, h: padH * 1.1, drop: 0 },
-      { p: new THREE.Vector3(0, padY - padH * 0.05, w3 * 0.85), w: w3 * 1.3, h: padH * 0.9, drop: 0 },
-    ]), 12, 0.5),
+    sweep(capped(round
+      ? [
+        { p: new THREE.Vector3(0, -above + w3 * 0.62, -w3 * 0.6), w: w3 * 0.98, h: w3 * 0.62, drop: 0 },
+        { p: new THREE.Vector3(0, -above + w3 * 0.62, 0), w: w3 * 1.08, h: w3 * 0.62, drop: 0 },
+        { p: new THREE.Vector3(0, -above + w3 * 0.62, w3 * 0.7), w: w3 * 1.02, h: w3 * 0.62, drop: 0 },
+      ]
+      : [
+        { p: new THREE.Vector3(0, padY + padH * 0.4, -w3 * 0.6), w: w3 * 0.85, h: padH * 1.15, drop: 0 },
+        { p: new THREE.Vector3(0, padY + padH * 0.15, 0), w: w3 * 1.15, h: padH * 1.1, drop: 0 },
+        { p: new THREE.Vector3(0, padY - padH * 0.05, w3 * 0.85), w: w3 * 1.3, h: padH * 0.9, drop: 0 },
+      ]), 12, 0.5),
     skin,
   );
   pad.castShadow = true;
   foot.add(pad);
   // Toes grow out of the front of the pad, fanned out and resting on the ground, each ending in a claw.
   const toeR = w3 * 0.4;
+  const inner = d.x < 0 ? d.toes - 1 : 0;
   for (let k = 0; k < d.toes; k++) {
     const spread = d.toes === 1 ? 0 : (k / (d.toes - 1) - 0.5) * (d.toes > 3 ? 1.1 : 0.85);
-    const toe = group(foot, [Math.sin(spread) * w3 * 0.6, 0, w3 * 0.55], [0, spread, 0]);
-    const len = d.toeLen * (k === 0 || k === d.toes - 1 ? 0.82 : 1);
+    const sickle = !!d.sickle && k === inner;
+    // The sickle toe pivots up at the pad so only the two outer toes bear weight.
+    const toe = group(foot, [Math.sin(spread) * w3 * 0.6, 0, w3 * 0.55], [sickle ? -0.75 : 0, spread, 0]);
+    const len = d.toeLen * (sickle ? 0.7 : k === 0 || k === d.toes - 1 ? 0.82 : 1);
     const tip: V3 = [0, -above + toeR * 0.75, len];
     limb(toe, skin, [0, -above + toeR * 1.1, -w3 * 0.1], tip, toeR, toeR * 0.6, 1.08, uo);
-    if (d.claws !== false) part(toe, GEO.cone, ivory(), [toeR * 0.45, len * 0.42, toeR * 0.45], [0, tip[1] - toeR * 0.25, tip[2] + len * 0.14], [Math.PI / 2 + 0.35, 0, 0]);
+    if (sickle) part(toe, GEO.cone, ivory(), [toeR * 0.55, len * 0.95, toeR * 0.55], [0, tip[1] - len * 0.47, tip[2] + len * 0.05], [Math.PI / 2 + 1.5, 0, 0]);
+    else if (d.claws !== false) part(toe, GEO.cone, ivory(), [toeR * 0.45, len * 0.42, toeR * 0.45], [0, tip[1] - toeR * 0.25, tip[2] + len * 0.14], [Math.PI / 2 + 0.35, 0, 0]);
   }
   const segs = [rel(p0, p1), rel(p1, p2), rel(p2, p3)].map(([, y, z]) => [y, z] as [number, number]);
-  const leg: Leg = { pivot, knee, ankle, foot, bend: d.bend, offset: d.offset, amp: d.amp, baseY: d.y, segs, rest: 0 };
+  const leg: Leg = { pivot, knee, ankle, foot, bend: d.bend, offset: d.offset, amp: d.amp, lift: d.lift ?? 1, baseY: d.y, segs, rest: 0 };
   leg.rest = legDrop(leg, 0, 0, 0);
   return leg;
 }
@@ -585,11 +626,18 @@ const PAIR = [0, Math.PI];
 
 function rig(root: THREE.Group, body: THREE.Group, b: Body, o: Partial<Rig>): Rig {
   return {
-    root, body, head: b.fwd[b.fwd.length - 1], legs: [], tail: b.tail, neck: b.fwd.slice(1, -1), jaw: null,
+    root, body, head: b.fwd[b.fwd.length - 1], legs: [], tail: b.tail, neck: b.fwd.slice(1, -1), jaw: null, chest: b.fwd[0],
     radius: 2, stepRate: 6, roarFor: 1.6, bob: 0.1, phase: 0, roaring: 0, biting: 0, lastStep: 0, wings: [], wingMode: 0, spread: 0, crouch: 0, air: 0,
+    sway: 0.06, tailWag: 1, lean: 0, quad: false,
     ...o,
   };
 }
+
+/**
+ * Walking quadrupeds use a lateral-sequence gait: left hind, left fore, right hind, right fore, a quarter
+ * of a cycle apart. Legs are listed front-left, front-right, hind-left, hind-right.
+ */
+const QUAD = [-Math.PI / 2, Math.PI / 2, 0, Math.PI];
 
 /** A row of small bony scutes along the back, from z0 to z1. */
 function scutes(b: Body, mat: THREE.Material, z0: number, z1: number, n: number, size: number) {
@@ -608,13 +656,15 @@ function trex(c: Colors): Rig {
   const root = new THREE.Group();
   const hip = 2.95;
   const body = group(root, [0, hip, 0]);
+  // Tail held straight out as a counterbalance, deep and muscular at the base; a short, thick S-curved
+  // neck; a deep, boxy skull about a fifth of the length, with a blunt snout.
   const b = skinnedBody(
     [
-      [-5.3, -0.3, 0.02, 0.02], [-4.6, -0.18, 0.12, 0.14], [-3.6, 0, 0.22, 0.27], [-2.6, 0.15, 0.34, 0.42],
-      [-1.7, 0.3, 0.52, 0.62], [-0.9, 0.42, 0.74, 0.82, 0.1], [-0.2, 0.45, 0.86, 0.9, 0.12], [0.5, 0.4, 0.86, 0.92, 0.18],
-      [1.2, 0.48, 0.76, 0.9, 0.2], [1.8, 0.75, 0.6, 0.72, 0.1], [2.25, 1.1, 0.52, 0.62], [2.6, 1.4, 0.58, 0.68, -0.35],
-      [3.0, 1.46, 0.55, 0.62, -0.45], [3.45, 1.4, 0.46, 0.54, -0.45], [3.9, 1.28, 0.36, 0.44, -0.4], [4.3, 1.16, 0.26, 0.33, -0.35],
-      [4.55, 1.08, 0.14, 0.19, -0.3], [4.66, 1.06, 0.03, 0.05],
+      [-5.3, -0.05, 0.02, 0.02], [-4.6, 0.02, 0.1, 0.13], [-3.6, 0.1, 0.22, 0.3], [-2.6, 0.2, 0.36, 0.48],
+      [-1.7, 0.32, 0.56, 0.7], [-0.9, 0.42, 0.76, 0.86, 0.1], [-0.2, 0.45, 0.86, 0.9, 0.12], [0.5, 0.4, 0.86, 0.92, 0.18],
+      [1.2, 0.48, 0.76, 0.9, 0.2], [1.8, 0.78, 0.62, 0.74, 0.1], [2.25, 1.12, 0.56, 0.64], [2.6, 1.4, 0.58, 0.7, -0.35],
+      [3.0, 1.48, 0.56, 0.66, -0.45], [3.45, 1.44, 0.48, 0.58, -0.45], [3.9, 1.32, 0.38, 0.47, -0.4], [4.3, 1.18, 0.28, 0.35, -0.35],
+      [4.58, 1.08, 0.16, 0.2, -0.3], [4.68, 1.04, 0.04, 0.05],
     ],
     [-1.0, -1.9, -2.9, -4.0], -0.2, [1.0, 1.75, 2.2, 2.55], skin,
   );
@@ -627,16 +677,17 @@ function trex(c: Colors): Rig {
   eyes(b, skin, 0.5, 1.74, 2.92, 0.085, skull);
   for (const side of [-1, 1]) part(attach(b, new THREE.Group(), [side * 0.13, 1.28, 4.5], skull), GEO.sphere, eyeMat(), [0.04, 0.035, 0.06]);
   scutes(b, plainMat(c.accent, 0.7), -3.8, 1.6, 14, 0.14);
-  // Little two-fingered arms under the chest.
+  // Little two-fingered arms under the chest: upper arm angled back, elbow tucked in, forearm forward,
+  // and the palms facing each other, so the two claws sit one above the other.
   for (const side of [-1, 1]) {
     const arm = attach(b, new THREE.Group(), [side * 0.56, 0.05, 1.45], b.fwd[0]);
-    arm.rotation.set(0.5, 0, side * 0.2);
+    arm.rotation.set(0.35, 0, side * 0.12);
     limb(arm, skin, [0, 0, 0], [0, -0.42, 0.12], 0.13, 0.09);
-    const fore = group(arm, [0, -0.42, 0.12], [-1.1, 0, 0]);
+    const fore = group(arm, [0, -0.42, 0.12], [-1.25, 0, -side * 0.2]);
     limb(fore, skin, [0, 0, 0], [0, -0.32, 0.05], 0.08, 0.06);
-    for (const dx of [-0.04, 0.04]) part(fore, GEO.cone, ivory(), [0.025, 0.12, 0.025], [dx, -0.38, 0.08], [Math.PI - 0.6, 0, 0]);
+    for (const dy of [-0.04, 0.03]) part(fore, GEO.cone, ivory(), [0.025, 0.13, 0.025], [-side * 0.01, -0.36 + dy, 0.09 - dy * 0.5], [Math.PI - 0.75, 0, 0]);
   }
-  const r = rig(root, body, b, { jaw: jawPivot, radius: 1.8, stepRate: 6.2, bob: 0.12 });
+  const r = rig(root, body, b, { jaw: jawPivot, radius: 1.8, stepRate: 6.2, bob: 0.12, sway: 0.09 });
   r.legs = [-1, 1].map((side, i) =>
     buildLeg(root, skin, {
       x: side * 0.52, y: hip, z: -0.15, pts: [[0, 0.2, -0.05], [0, -1.0, 0.55], [0, -2.15, -0.05], [0, -2.82, 0.2]],
@@ -654,38 +705,43 @@ function triceratops(c: Colors): Rig {
   const b = skinnedBody(
     [
       [-3.7, -0.35, 0.02, 0.02], [-3.0, -0.18, 0.15, 0.18], [-2.2, 0.05, 0.32, 0.38], [-1.4, 0.25, 0.64, 0.72],
-      [-0.6, 0.35, 0.92, 0.94, 0.2], [0.3, 0.35, 1.0, 0.96, 0.3], [1.1, 0.25, 0.86, 0.84, 0.2], [1.7, 0.12, 0.6, 0.6],
-      [2.1, 0.1, 0.58, 0.62], [2.55, 0, 0.55, 0.62, -0.1], [3.0, -0.18, 0.42, 0.5], [3.4, -0.36, 0.25, 0.32], [3.65, -0.48, 0.06, 0.08],
+      [-0.6, 0.35, 0.92, 0.94, 0.2], [0.3, 0.35, 1.0, 0.96, 0.3], [1.1, 0.25, 0.86, 0.84, 0.2], [1.7, 0.1, 0.64, 0.62],
+      // A big, deep skull (a good quarter of the animal) carried low, narrowing to the beak.
+      [2.1, 0.12, 0.68, 0.72], [2.55, 0.02, 0.64, 0.72, -0.1], [3.0, -0.18, 0.5, 0.56, -0.1], [3.45, -0.4, 0.3, 0.36], [3.75, -0.55, 0.08, 0.1],
     ],
     [-1.4, -2.3, -3.0], -0.6, [1.0, 1.8, 2.15], skin,
   );
   body.add(b.mesh);
   const head = b.fwd[2];
-  const jawPivot = jaw(b, skin, [0, -0.2, 2.45], [[-0.1, 0, 0.36, 0.18], [0.1, -0.05, 0.4, 0.2], [0.6, -0.14, 0.28, 0.15], [1.0, -0.24, 0.12, 0.08], [1.12, -0.26, 0.03, 0.03]], 0, 0.05);
-  // Frill: a broad bony shield swept up and back over the neck, with a thick rim studded with knobs.
-  const frill = attach(b, new THREE.Group(), [0, 0.5, 2.2], head);
-  frill.rotation.x = -0.72;
+  const jawPivot = jaw(b, skin, [0, -0.22, 2.45], [[-0.1, 0, 0.42, 0.2], [0.1, -0.05, 0.46, 0.22], [0.6, -0.14, 0.32, 0.17], [1.05, -0.26, 0.14, 0.09], [1.2, -0.3, 0.03, 0.03]], 0, 0.05);
+  // Frill: a broad bony shield growing from the back of the skull and sweeping back over the neck at
+  // about 55 degrees, its top a little above the back, with a scalloped rim of small knobs.
+  const frill = attach(b, new THREE.Group(), [0, 0.5, 2.05], head);
+  frill.rotation.x = -0.98;
   // Skin-covered shield on a darker rim that shows round its edge.
-  part(frill, GEO.sphere, plainMat(c.accent, 0.65), [1.62, 1.37, 0.12], [0, 0.85, -0.03]);
-  part(frill, GEO.sphere, skin, [1.5, 1.25, 0.16], [0, 0.85, 0.01]);
+  part(frill, GEO.sphere, plainMat(c.accent, 0.65), [1.5, 1.3, 0.12], [0, 0.8, -0.03]);
+  part(frill, GEO.sphere, skin, [1.4, 1.2, 0.16], [0, 0.8, 0.01]);
   for (let k = 0; k < 15; k++) {
     const a = -1.5 + (k / 14) * 3.0;
-    part(frill, GEO.cone, ivory(), [0.08, 0.24, 0.08], [Math.sin(a) * 1.58, 0.85 + Math.cos(a) * 1.33, 0], [0, 0, -a]);
+    part(frill, GEO.cone, ivory(), [0.08, 0.22, 0.08], [Math.sin(a) * 1.47, 0.8 + Math.cos(a) * 1.27, 0], [0, 0, -a]);
   }
+  // Brow horns: long, rooted above and behind the eyes, pointing forward and a little up and out.
   const horn = plainMat('#d6cbb0', 0.5);
   for (const side of [-1, 1]) {
-    const h = attach(b, new THREE.Group(), [side * 0.32, 0.5, 2.6], head);
-    h.rotation.set(Math.PI / 2 - 0.4, 0, -side * 0.14);
-    part(h, GEO.cone, horn, [0.12, 1.4, 0.12], [0, 0.66, 0]);
+    const h = attach(b, new THREE.Group(), [side * 0.36, 0.55, 2.42], head);
+    h.rotation.set(Math.PI / 2 - 0.48, 0, -side * 0.12);
+    part(h, GEO.cone, horn, [0.14, 1.35, 0.14], [0, 0.6, 0]);
   }
-  part(attach(b, new THREE.Group(), [0, 0.15, 3.25], head), GEO.cone, horn, [0.08, 0.42, 0.08], [0, 0.18, 0], [0.45, 0, 0]);
-  part(attach(b, new THREE.Group(), [0, -0.36, 3.5], head), GEO.cone, plainMat('#2e2720', 0.5), [0.14, 0.34, 0.12], [0, 0, 0.1], [Math.PI / 2 + 0.6, 0, 0]);
-  eyes(b, skin, 0.46, 0.3, 2.62, 0.065, head);
-  const r = rig(root, body, b, { jaw: jawPivot, radius: 2, stepRate: 6, bob: 0.06 });
-  r.legs = ([[-1, 1.05, 0, -1], [1, 1.05, Math.PI, -1], [-1, -0.85, Math.PI, 1], [1, -0.85, 0, 1]] as const).map(([sx, z, off, bend]) =>
+  // A short nose horn, and a hooked, parrot-like beak.
+  part(attach(b, new THREE.Group(), [0, 0.18, 3.3], head), GEO.cone, horn, [0.09, 0.44, 0.09], [0, 0.18, 0], [0.5, 0, 0]);
+  part(attach(b, new THREE.Group(), [0, -0.44, 3.72], head), GEO.cone, plainMat('#2e2720', 0.5), [0.15, 0.36, 0.13], [0, 0, 0.1], [Math.PI / 2 + 0.6, 0, 0]);
+  eyes(b, skin, 0.52, 0.32, 2.6, 0.065, head);
+  const r = rig(root, body, b, { jaw: jawPivot, radius: 2, stepRate: 6, bob: 0.05, sway: 0.05, quad: true, tailWag: 0.7 });
+  // Semi-erect forelimbs: the humerus bows outwards and the elbow turns back; hind legs are upright pillars.
+  r.legs = ([[-1, 1.05, -1], [1, 1.05, -1], [-1, -0.85, 1], [1, -0.85, 1]] as const).map(([sx, z, bend], i) =>
     buildLeg(root, skin, bend < 0
-      ? { x: sx * 0.72, y: hip - 0.15, z, pts: [[0, 0, 0], [0, -0.7, -0.15], [0, -1.38, 0.05], [0, -1.56, 0.1]], w: [0.4, 0.26, 0.2, 0.22], toes: 4, toeLen: 0.2, bend, offset: off, amp: 0.4, claws: false }
-      : { x: sx * 0.75, y: hip, z, pts: [[0, 0.05, 0], [0, -0.75, 0.3], [0, -1.4, -0.12], [0, -1.7, 0.05]], w: [0.52, 0.3, 0.2, 0.22], toes: 4, toeLen: 0.22, bend, offset: off, amp: 0.4, claws: false }),
+      ? { x: sx * 0.78, y: hip - 0.15, z, pts: [[0, 0, 0], [0, -0.68, -0.2], [0, -1.38, 0.05], [0, -1.56, 0.1]], w: [0.4, 0.27, 0.21, 0.23], toes: 4, toeLen: 0.2, bend, offset: QUAD[i], amp: 0.4, claws: false, splay: 0.3 }
+      : { x: sx * 0.75, y: hip, z, pts: [[0, 0.05, 0], [0, -0.75, 0.3], [0, -1.4, -0.12], [0, -1.7, 0.05]], w: [0.52, 0.3, 0.2, 0.22], toes: 4, toeLen: 0.22, bend, offset: QUAD[i], amp: 0.4, claws: false }),
   );
   return r;
 }
@@ -722,27 +778,31 @@ function stegosaurus(c: Colors): Rig {
   body.add(b.mesh);
   const plateMat = new THREE.MeshStandardMaterial({ color: c.accent, roughness: 0.55, side: THREE.DoubleSide });
   owned.push(plateMat);
+  // Two staggered rows of plates, each leaning a little outwards, the biggest over the hips.
   for (let k = 0; k < 13; k++) {
     const z = -2.8 + k * 0.38;
     const size = 0.35 + Math.sin(((k + 0.5) / 13) * Math.PI) * 0.65;
     const side = k % 2 ? 1 : -1;
-    const g = attach(b, new THREE.Group(), [side * 0.08, b.spineY(z) + b.spineH(z) * 0.85, z]);
-    g.rotation.z = side * 0.08;
+    const g = attach(b, new THREE.Group(), [side * 0.2, b.spineY(z) + b.spineH(z) * 0.82, z]);
+    g.rotation.z = side * 0.2;
     const m = part(g, plate(), plateMat, [1, size, size]);
     m.position.z = -size * 0.1;
   }
-  // The thagomizer: four tail spikes.
-  for (const side of [-1, 1]) for (const z of [-3.05, -3.4]) {
-    const g = attach(b, new THREE.Group(), [side * 0.1, b.spineY(z) + 0.05, z]);
-    g.rotation.set(-0.35, 0, -side * 1.05);
-    part(g, GEO.cone, ivory(), [0.07, 0.75, 0.07], [0, 0.38, 0]);
+  // The thagomizer: two pairs of long spikes near the tail tip, pointing out to the sides and back.
+  const spikeDir = new THREE.Vector3();
+  const UP = new THREE.Vector3(0, 1, 0);
+  for (const side of [-1, 1]) for (const z of [-2.95, -3.4]) {
+    const g = attach(b, new THREE.Group(), [side * 0.12, b.spineY(z) + 0.04, z]);
+    g.quaternion.setFromUnitVectors(UP, spikeDir.set(side * 0.72, 0.28, -0.64).normalize());
+    part(g, GEO.cone, ivory(), [0.075, 0.9, 0.075], [0, 0.42, 0]);
   }
   eyes(b, skin, 0.17, -0.38, 2.95, 0.04, b.fwd[2]);
-  const r = rig(root, body, b, { radius: 2, stepRate: 5.5, bob: 0.06 });
-  r.legs = ([[-1, 1.15, 0, -1], [1, 1.15, Math.PI, -1], [-1, -0.6, Math.PI, 1], [1, -0.6, 0, 1]] as const).map(([sx, z, off, bend]) =>
+  const r = rig(root, body, b, { radius: 2, stepRate: 5.5, bob: 0.05, sway: 0.05, quad: true, tailWag: 0.8 });
+  // Forelimbs about two thirds the length of the hind legs, so the back is highest over the hips.
+  r.legs = ([[-1, 1.15, -1], [1, 1.15, -1], [-1, -0.6, 1], [1, -0.6, 1]] as const).map(([sx, z, bend], i) =>
     buildLeg(root, skin, bend < 0
-      ? { x: sx * 0.55, y: hip - 0.6, z, pts: [[0, 0, 0], [0, -0.5, -0.08], [0, -1.08, 0.04], [0, -1.22, 0.08]], w: [0.3, 0.22, 0.17, 0.19], toes: 4, toeLen: 0.18, bend, offset: off, amp: 0.38, claws: false }
-      : { x: sx * 0.6, y: hip, z, pts: [[0, 0.05, 0], [0, -0.85, 0.25], [0, -1.55, -0.1], [0, -1.8, 0.05]], w: [0.46, 0.28, 0.2, 0.22], toes: 3, toeLen: 0.22, bend, offset: off, amp: 0.38, claws: false }),
+      ? { x: sx * 0.58, y: hip - 0.6, z, pts: [[0, 0, 0], [0, -0.5, -0.1], [0, -1.08, 0.04], [0, -1.22, 0.08]], w: [0.3, 0.22, 0.17, 0.19], toes: 4, toeLen: 0.18, bend, offset: QUAD[i], amp: 0.38, claws: false, splay: 0.22 }
+      : { x: sx * 0.6, y: hip, z, pts: [[0, 0.05, 0], [0, -0.85, 0.25], [0, -1.55, -0.1], [0, -1.8, 0.05]], w: [0.46, 0.28, 0.2, 0.22], toes: 3, toeLen: 0.22, bend, offset: QUAD[i], amp: 0.38, claws: false }),
   );
   return r;
 }
@@ -755,21 +815,27 @@ function brachiosaurus(c: Colors): Rig {
   const b = skinnedBody(
     [
       [-5.0, -0.6, 0.02, 0.02], [-4.2, -0.45, 0.12, 0.14], [-3.2, -0.1, 0.25, 0.3], [-2.1, 0.3, 0.52, 0.62],
-      [-1.0, 0.65, 0.96, 1.0, 0.15], [0.2, 0.85, 1.1, 1.15, 0.25], [1.3, 1.02, 0.95, 1.0, 0.15], [2.0, 1.55, 0.55, 0.6],
+      // A broad barrel of a body: wide enough across the hips and shoulders for the legs to stand under it.
+      [-1.0, 0.65, 1.22, 1.02, 0.12], [0.2, 0.85, 1.3, 1.15, 0.2], [1.3, 1.02, 1.2, 1.02, 0.12], [2.0, 1.55, 0.7, 0.66],
       [2.45, 2.35, 0.42, 0.45], [2.8, 3.3, 0.35, 0.38], [3.1, 4.3, 0.3, 0.32], [3.35, 5.2, 0.27, 0.28], [3.62, 5.72, 0.3, 0.3],
-      [4.0, 5.8, 0.27, 0.26, -0.2], [4.35, 5.7, 0.19, 0.18, -0.2], [4.55, 5.6, 0.05, 0.06],
+      // A short, deep snout under the tall nasal arch.
+      [4.0, 5.8, 0.27, 0.27, -0.2], [4.35, 5.68, 0.2, 0.2, -0.2], [4.55, 5.58, 0.13, 0.13], [4.65, 5.54, 0.04, 0.05],
     ],
     [-2.1, -3.2, -4.2], -1.0, [1.0, 2.0, 2.45, 2.8, 3.1, 3.55], skin,
   );
   body.add(b.mesh);
   const head = b.fwd[b.fwd.length - 1];
-  part(attach(b, new THREE.Group(), [0, 6.02, 3.75], head), GEO.sphere, skin, [0.2, 0.16, 0.3]);
-  eyes(b, skin, 0.27, 5.86, 3.86, 0.05, head);
-  const r = rig(root, body, b, { radius: 2.4, stepRate: 4, bob: 0.08 });
-  r.legs = ([[-1, 1.2, 0, -1], [1, 1.2, Math.PI, -1], [-1, -1.1, Math.PI, 1], [1, -1.1, 0, 1]] as const).map(([sx, z, off, bend]) =>
+  // The domed nasal arch over the eyes that marks a brachiosaur's head.
+  part(attach(b, new THREE.Group(), [0, 6.0, 3.72], head), GEO.sphere, skin, [0.22, 0.24, 0.34]);
+  eyes(b, skin, 0.27, 5.84, 3.9, 0.05, head);
+  const r = rig(root, body, b, { radius: 2.4, stepRate: 4, bob: 0.07, sway: 0.05, quad: true, tailWag: 0.8 });
+  // Column-like legs, the front pair the longer: no muscle bulge, an even taper from a thick thigh or
+  // shoulder that rises well up into the torso, straight lines, and broad round pads with no toes
+  // showing. A short, low, measured stride.
+  r.legs = ([[-1, 1.15, -1], [1, 1.15, -1], [-1, -1.1, 1], [1, -1.1, 1]] as const).map(([sx, z, bend], i) =>
     buildLeg(root, skin, bend < 0
-      ? { x: sx * 0.8, y: hip + 0.45, z, pts: [[0, 0, 0], [0, -1.55, -0.1], [0, -3.0, 0.05], [0, -3.18, 0.1]], w: [0.48, 0.36, 0.3, 0.33], toes: 4, toeLen: 0.16, bend, offset: off, amp: 0.3, claws: false }
-      : { x: sx * 0.82, y: hip, z, pts: [[0, 0.05, 0], [0, -1.3, 0.2], [0, -2.52, -0.05], [0, -2.72, 0.05]], w: [0.62, 0.38, 0.3, 0.33], toes: 4, toeLen: 0.18, bend, offset: off, amp: 0.3, claws: false }),
+      ? { x: sx * 0.56, y: hip + 0.45, z, pts: [[0, 0, 0], [0, -1.55, -0.04], [0, -3.0, 0.02], [0, -3.2, 0.04]], w: [0.56, 0.44, 0.37, 0.35], toes: 0, toeLen: 0, bend, offset: QUAD[i], amp: 0.26, claws: false, up: 0.8, bulge: 1, lift: 0.55 }
+      : { x: sx * 0.58, y: hip, z, pts: [[0, 0.05, 0], [0, -1.3, 0.1], [0, -2.52, -0.03], [0, -2.74, 0.02]], w: [0.62, 0.46, 0.37, 0.35], toes: 0, toeLen: 0, bend, offset: QUAD[i], amp: 0.26, claws: false, up: 0.7, bulge: 1, lift: 0.55 }),
   );
   return r;
 }
@@ -810,22 +876,23 @@ function spinoraptor(c: Colors): Rig {
   const jawPivot = jaw(b, skin, [0, 1.0, 2.05], [[-0.1, 0, 0.2, 0.1], [0.05, -0.03, 0.2, 0.1], [0.5, -0.05, 0.14, 0.07], [1.0, -0.04, 0.08, 0.05], [1.2, -0.03, 0.03, 0.03]], 9, 0.07);
   teeth(b.fwd[3], [0.18, 1.04 - 1.16, 2.25 - 2.0], [0.07, 0.92 - 1.16, 3.15 - 2.0], 10, 0.08, false);
   eyes(b, skin, 0.2, 1.3, 2.18, 0.045, b.fwd[3]);
+  // Long arms folded like a bird's wing, three fingers with the palms facing each other (claws stacked).
   for (const side of [-1, 1]) {
     const arm = attach(b, new THREE.Group(), [side * 0.36, 0.2, 1.05], b.fwd[0]);
-    arm.rotation.set(0.3, 0, side * 0.25);
+    arm.rotation.set(0.2, 0, side * 0.15);
     limb(arm, skin, [0, 0, 0], [0, -0.45, 0.15], 0.1, 0.07);
-    const fore = group(arm, [0, -0.45, 0.15], [-0.9, 0, 0]);
+    const fore = group(arm, [0, -0.45, 0.15], [-1.1, 0, -side * 0.2]);
     limb(fore, skin, [0, 0, 0], [0, -0.42, 0.05], 0.07, 0.05);
-    for (const dx of [-0.04, 0, 0.04]) part(fore, GEO.cone, ivory(), [0.022, 0.14, 0.022], [dx, -0.5, 0.08], [Math.PI - 0.6, 0, 0]);
+    for (const dy of [-0.045, 0, 0.045]) part(fore, GEO.cone, ivory(), [0.022, 0.15, 0.022], [-side * 0.01, -0.48 + dy, 0.08 - dy * 0.6], [Math.PI - 0.75, 0, 0]);
   }
-  const r = rig(root, body, b, { jaw: jawPivot, radius: 1.4, stepRate: 10, bob: 0.1 });
+  // A raptor's tail is stiffened by bony rods: it sweeps as one piece from the base.
+  const r = rig(root, body, b, { jaw: jawPivot, radius: 1.4, stepRate: 10, bob: 0.1, sway: 0.05, tailWag: 0.45 });
   r.legs = [-1, 1].map((side, i) => {
+    // Long shins and a long metatarsus: a sprinter's leg, up on its toes.
     const l = buildLeg(root, skin, {
-      x: side * 0.4, y: hip, z: -0.05, pts: [[0, 0.05, 0], [0, -0.75, 0.4], [0, -1.45, -0.05], [0, -1.8, 0.12]],
-      w: [0.36, 0.2, 0.12, 0.11], toes: 3, toeLen: 0.4, bend: 1, offset: PAIR[i], amp: 0.6,
+      x: side * 0.4, y: hip, z: -0.05, pts: [[0, 0.05, 0], [0, -0.7, 0.4], [0, -1.38, -0.08], [0, -1.8, 0.12]],
+      w: [0.36, 0.2, 0.12, 0.11], toes: 3, toeLen: 0.4, bend: 1, offset: PAIR[i], amp: 0.6, sickle: true,
     });
-    // The sickle claw, held off the ground.
-    part(l.foot, GEO.cone, ivory(), [0.05, 0.3, 0.05], [side * -0.08, 0.02, 0.1], [-0.4, 0, 0]);
     return l;
   });
   return r;
@@ -834,7 +901,9 @@ function spinoraptor(c: Colors): Rig {
 function pteranodon(c: Colors): Rig {
   const skin = skinMaterial(c);
   const root = new THREE.Group();
-  const hip = 1.25;
+  // On the ground it stands on all fours, torso tilted nose-up, the folded wings reaching down in
+  // front as forelimbs (animate() poses them) and the hind legs short under the hips.
+  const hip = 1.05;
   const body = group(root, [0, hip, 0]);
   const b = skinnedBody(
     [
@@ -847,9 +916,10 @@ function pteranodon(c: Colors): Rig {
   body.add(b.mesh);
   const head = b.fwd[2];
   const jawPivot = jaw(b, skin, [0, 0.86, 1.6], [[-0.05, 0, 0.07, 0.05], [0.1, -0.01, 0.07, 0.05], [0.6, -0.03, 0.04, 0.03], [1.0, -0.05, 0.015, 0.015], [1.05, -0.05, 0.01, 0.01]], 0, 0.02);
-  const crest = attach(b, new THREE.Group(), [0, 1.08, 1.45], head);
-  crest.rotation.x = -Math.PI / 2 - 0.35;
-  part(crest, GEO.cone, plainMat(c.accent, 0.6), [0.06, 1.1, 0.2], [0, 0.55, 0]);
+  // The crest: a long blade off the back of the skull, pointing backwards in line with the beak, a touch up.
+  const crest = attach(b, new THREE.Group(), [0, 1.04, 1.5], head);
+  crest.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0.3, -1).normalize());
+  part(crest, GEO.cone, plainMat(c.accent, 0.6), [0.05, 1.15, 0.2], [0, 0.55, 0]);
   eyes(b, skin, 0.13, 1.02, 1.58, 0.035, head);
   // Wings: a leathery membrane from shoulder to wingtip and back to the hips, with a bony leading edge.
   const wingShape = new THREE.Shape();
@@ -866,15 +936,17 @@ function pteranodon(c: Colors): Rig {
     owned.push(geo);
     const pivot = attach(b, new THREE.Group(), [side * 0.28, 0.45, 0.45], b.fwd[0]);
     part(pivot, geo, membrane, [1, 1, 1]);
-    part(pivot, GEO.sphere, skin, [1.7, 0.05, 0.06], [side * 1.7, 0.01, 0.17], [0, side * 0.06, 0]);
+    // The arm and wing-finger bones along the leading edge, thickest at the shoulder.
+    part(pivot, GEO.sphere, skin, [1.7, 0.07, 0.09], [side * 1.7, 0.01, 0.17], [0, side * 0.06, 0]);
+    part(pivot, GEO.sphere, skin, [0.6, 0.1, 0.12], [side * 0.55, 0.01, 0.2], [0, side * 0.06, 0]);
     return { pivot, side };
   });
-  const r = rig(root, body, b, { jaw: jawPivot, radius: 1.3, stepRate: 7, bob: 0.06 });
+  const r = rig(root, body, b, { jaw: jawPivot, radius: 1.3, stepRate: 7, bob: 0.04, sway: 0.03, quad: true, lean: -0.32, tailWag: 0.5 });
   r.wings = wings;
   r.legs = [-1, 1].map((side, i) =>
     buildLeg(root, skin, {
-      x: side * 0.2, y: hip, z: -0.2, pts: [[0, 0, 0], [0, -0.55, 0.2], [0, -1.02, -0.05], [0, -1.18, 0.05]],
-      w: [0.14, 0.09, 0.06, 0.06], toes: 3, toeLen: 0.18, bend: 1, offset: PAIR[i], amp: 0.5,
+      x: side * 0.2, y: hip, z: -0.2, pts: [[0, 0, 0], [0, -0.48, 0.18], [0, -0.88, -0.05], [0, -0.98, 0.05]],
+      w: [0.13, 0.08, 0.06, 0.06], toes: 3, toeLen: 0.16, bend: 1, offset: PAIR[i], amp: 0.5,
     }),
   );
   return r;
@@ -918,7 +990,7 @@ export function animate(r: Rig, dt: number, move: number, t: number, speed = 0):
     // Longer legs swing through a smaller angle for the same stride.
     const swing = Math.sin(ph) * Math.asin(Math.min(1, reach / l.rest)) * fade;
     // The foot travels forward while the swing angle is falling: lift it then.
-    const lift = Math.max(0, -Math.cos(ph)) * fade * (0.6 + 0.4 * move);
+    const lift = Math.max(0, -Math.cos(ph)) * fade * (0.6 + 0.4 * move) * l.lift;
     // Crouch: thigh forward, knee bent, ankle flexed. In the air: the whole leg tucked up.
     const ch = -l.bend * r.crouch * 0.5;
     const ck = l.bend * r.crouch * 1.05;
@@ -936,16 +1008,38 @@ export function animate(r: Rig, dt: number, move: number, t: number, speed = 0):
     l.pivot.position.y = l.baseY - d;
     drop = Math.max(drop, d);
   }
-  // Heavy animals: the body dips on each footfall and rolls a little from side to side.
-  r.body.position.y = r.legs[0].baseY - drop - Math.abs(Math.sin(r.phase)) * r.bob * move + Math.sin(t * 1.6) * 0.02;
-  r.body.rotation.z = Math.sin(r.phase) * 0.03 * move;
+  const still = 1 - move;
+  const breath = Math.sin(t * 1.6);
+  // Weight shift: the body moves out over whichever foot is planted, and the hips swing with the stride.
+  // In a biped the first leg (the left) is on the ground while cos(phase) > 0; a quadruped's support
+  // pattern turns twice as fast and is led by the hind legs. Standing, the weight drifts slowly from foot to foot.
+  const sway = r.quad ? Math.sin(r.phase * 2) * 0.5 : -Math.cos(r.phase);
+  r.body.position.x = sway * r.sway * move + Math.sin(t * 0.45) * 0.02 * still;
+  // The body dips at each footfall (where |sin| peaks for the gait's offsets), rolls onto the planted
+  // side and, in bipeds, the pelvis yaws toward the advancing leg.
+  const dip = r.quad ? Math.abs(Math.sin(r.phase * 2 + Math.PI / 4)) : Math.abs(Math.sin(r.phase));
+  r.body.position.y = r.legs[0].baseY - drop - dip * r.bob * move + breath * 0.012 * (0.5 + 0.5 * still);
+  r.body.rotation.z = sway * (r.quad ? 0.035 : 0.045) * move;
+  const yaw = r.quad ? 0 : Math.sin(r.phase) * 0.06 * move;
+  r.body.rotation.y = yaw;
+  // Breathing: the chest swells while standing; the first neck bone undoes it so the head stays still.
+  const swell = 1 + breath * 0.016 * (0.4 + 0.6 * still);
+  r.chest.scale.set(swell, swell, 1);
+  r.neck[0].scale.set(1 / swell, 1 / swell, 1);
+  // The tail counter-swings the hips (it lags the stride down its length) and whips up a little with
+  // the body's dip; a stiff tail (tailWag < 1) mostly moves at the base.
+  const wag = r.tailWag;
   r.tail.forEach((seg, i) => {
-    seg.rotation.y = Math.sin(t * 1.1 - i * 0.6) * 0.06 + Math.sin(r.phase - i * 0.55) * 0.08 * move;
+    const along = i / r.tail.length;
+    const lag = Math.sin(r.phase - 0.5 - i * 0.55 * wag);
+    seg.rotation.y = -yaw * 0.6 + Math.sin(t * 1.1 - i * 0.6) * 0.05 * wag * (0.5 + still) + lag * 0.07 * wag * move * (0.5 + along);
     // In the air the tail lifts to balance; in a crouch it drops.
-    seg.rotation.x = Math.sin(t * 0.8 - i * 0.4) * 0.015 - r.air * 0.07 + r.crouch * 0.05;
+    seg.rotation.x = Math.sin(t * 0.8 - i * 0.4) * 0.012 + (r.quad ? 0 : Math.cos(r.phase * 2) * 0.012 * move) - r.air * 0.07 + r.crouch * 0.05;
   });
+  // The neck undoes the pelvis yaw, so the head keeps pointing where the animal is going, and looks around idly.
+  const nn = r.neck.length;
   r.neck.forEach((seg, i) => {
-    seg.rotation.y = Math.sin(t * 0.7 + i * 0.5) * 0.04;
+    seg.rotation.y = -yaw / nn + Math.sin(t * 0.7 + i * 0.5) * 0.04 * (0.4 + 0.6 * still);
   });
   // Roar: rear the head back and open wide.
   const roar = r.roaring > 0 ? Math.sin(Math.PI * Math.min(1, (1 - r.roaring) * 1.6)) : 0;
@@ -957,21 +1051,34 @@ export function animate(r: Rig, dt: number, move: number, t: number, speed = 0):
   const gape = r.biting > 0.5 ? Math.sin(Math.PI * (1 - r.biting) * 2) : 0;
   r.biting = Math.max(0, r.biting - dt / 0.45);
   r.body.position.z = lunge * 0.8;
-  r.body.rotation.x = lunge * 0.12 - roar * 0.08;
-  // The head stays level against the body's bob, as a predator's does.
-  r.head.rotation.x = r.head.userData.base - roar * 0.45 + lunge * 0.3 + Math.sin(r.phase * 2) * 0.02 * move + Math.sin(t * 1.3) * 0.02;
-  if (r.jaw) r.jaw.rotation.x = Math.max(roar * 0.7, gape * 0.85);
-  // Wings: tucked down for walking, spread out in the air, beating while it flies.
+  r.body.rotation.x = lunge * 0.12 - roar * 0.08 + r.lean * (1 - r.spread);
+  // The head stays level against the body's bob, as a predator's does: it nods against the dip of each
+  // step (twice per cycle in a biped), and the jaw hangs a little open at a flat-out run.
+  const nod = r.quad ? 0 : -Math.cos(r.phase * 2) * 0.025 * move;
+  r.head.rotation.x = r.head.userData.base - roar * 0.45 + lunge * 0.3 + nod + Math.sin(t * 1.3) * 0.015;
+  const pant = Math.max(0, move - 0.7) * 0.25;
+  if (r.jaw) r.jaw.rotation.x = Math.max(roar * 0.7, gape * 0.85, pant);
+  // Wings: on the ground they fold and the animal walks on them, the wing arm reaching down in front
+  // like a forelimb and stepping in sequence with the hind legs; in the air they spread, beating in flight.
   if (r.wings.length) {
     r.spread += ((r.wingMode > 0 ? 1 : 0) - r.spread) * Math.min(1, dt * 6);
     const beat = r.wingMode >= 1 ? Math.sin(t * 9) * 0.6 : r.wingMode > 0 ? Math.sin(t * 2) * 0.05 + 0.08 : 0;
-    // Folded, each wing swings back along the body and lies against its side.
     const fold = 1 - r.spread;
     for (const w of r.wings) {
-      w.pivot.scale.x = 0.26 + 0.74 * r.spread;
-      w.pivot.scale.z = 0.3 + 0.7 * r.spread;
-      w.pivot.rotation.y = w.side * fold * 1.2;
-      w.pivot.rotation.z = w.side * (beat * r.spread + fold * 0.55);
+      // The left forelimb follows the left hind leg by a quarter cycle (a lateral-sequence walk).
+      const ph = r.phase + (w.side < 0 ? -Math.PI / 2 : Math.PI / 2);
+      const step = Math.sin(ph) * 0.35 * fade;
+      // The hand stays on the ground through its swing: a straight limb on one pivot reaches less far
+      // down the more it is pitched, so its length follows 1/cos of the pitch. It draws up a little while
+      // swinging forward, so the hand clears the ground.
+      const pitch = -0.12 + step + r.lean;
+      const lift = Math.max(0, -Math.cos(ph)) * fade * 0.12;
+      const reach = Math.min(0.62, 0.49 / Math.cos(pitch)) - lift;
+      w.pivot.scale.x = reach * fold + r.spread;
+      w.pivot.scale.z = 0.2 + 0.8 * r.spread;
+      w.pivot.rotation.x = (-0.12 + step) * fold;
+      w.pivot.rotation.y = -w.side * fold * 0.25;
+      w.pivot.rotation.z = w.side * (beat * r.spread - fold * 1.35);
     }
   }
   const step = Math.floor(r.phase / Math.PI);
