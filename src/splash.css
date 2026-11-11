@@ -242,9 +242,11 @@
   filter: drop-shadow(0 6px 0 rgba(0, 0, 0, 0.6)) drop-shadow(0 0 28px rgba(0, 0, 0, 0.8));
 }
 
+/* Shrink-wrapped round the title (for the stamp) but on its own line, so the tagline stays below it. */
 .sp-logo {
   position: relative;
-  display: inline-block;
+  display: table;
+  margin: 0 auto;
 }
 
 /* A stamp across the title's top-right corner. */
