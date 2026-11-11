@@ -9,9 +9,9 @@ import { canon, mapSource } from './maps/source';
 import type { CarSpot, House, Pt, Shape, Spot } from './maps/types';
 import { disposeMerged } from './merge';
 import { CAGE, CAR_COLORS, createCage, createCar, createPerson, disposePark } from './park';
-import { area, circle, resample, sdPoly, simplify, soften, toPath } from './shapes';
+import { area, boxOf, circle, coastAt, resample, sdPoly, simplify, soften, toPath } from './shapes';
 import { createStation } from './station';
-import { buildWorld, groundY, rng, SCALE, toLine, useMap } from './world';
+import { buildWorld, groundY, PIER, rng, SCALE, toLine, useMap } from './world';
 
 /**
  * The map editor (#/map, #/map/<id>): the real 3D world drawn straight from above, with the map's
@@ -28,7 +28,7 @@ const T = {
     saved: 'Saved', unsaved: 'Unsaved changes', draft: 'Not saved yet', saving: 'Saving…', saveFailed: 'Could not save', updating: 'Updating…', savedTo: 'Saved to', ground: 'ground',
     askName: 'Name of the new map:', newName: 'New island', copyOf: 'Copy of',
     revert: 'Discard changes', revertAsk: 'Discard the unsaved changes to this map?', deleteDraft: 'Delete this map', deleteAsk: 'Delete this map? It was never saved to the project.',
-    tools: { select: 'Select', erase: 'Erase', cage: 'Cage', building: 'Building', fence: 'Fence', person: 'Person', guard: 'Guard', car: 'Jeep', road: 'Road', lake: 'Lake', hill: 'Hill', mesa: 'Plateau', volcano: 'Volcano' },
+    tools: { select: 'Select', erase: 'Erase', cage: 'Cage', building: 'Building', fence: 'Fence', person: 'Person', guard: 'Guard', car: 'Jeep', road: 'Road', lake: 'Lake', hill: 'Hill', mesa: 'Plateau', volcano: 'Volcano', land: 'Land', sea: 'Sea' },
     hints: {
       select: 'Tap something to select it, and drag to move it. Drag empty ground to pan.',
       erase: 'Tap or drag over things to remove them.',
@@ -43,20 +43,22 @@ const T = {
       hill: 'Draw along a ridge, or tap for a round hill. A negative height digs a hollow.',
       mesa: 'Draw round the edge of the plateau, or tap for a round one.',
       volcano: 'Draw round the foot of the volcano, or tap for a round one. Bigger ones are taller.',
+      land: 'Paint land with the brush. A beach forms along every coast.',
+      sea: 'Paint sea with the brush: it washes the land away. For an island, paint sea all round it, or start from All sea and paint the island.',
     },
     pan: 'Pan with two fingers, the right mouse button or Space + drag. Zoom with a pinch or the scroll wheel.',
     kinds: { paddock: 'Paddock (start)', cage: 'Cage', building: 'Building', fence: 'Fence', person: 'Person', guard: 'Guard post', car: 'Jeep', road: 'Road', lake: 'Lake', hill: 'Hill', mesa: 'Plateau', volcano: 'Volcano', town: 'Main Street', power: 'Power station', docks: 'Docks' },
     map: 'Map', nameEn: 'Name (English)', nameDa: 'Name (Danish)', half: 'Half width', shore: 'Shore (z)', relief: 'Rolling hills', reliefSeed: 'Hills seed', trees: 'Trees', palms: 'Share of palms', bushes: 'Bushes', rocks: 'Rocks', seed: 'Jungle seed',
     width: 'Width', height: 'Height', depth: 'Depth', radius: 'Radius', level: 'Ground height', style: 'Colours', hp: 'Bites to wreck', turn: 'Turn round', shop: 'Shop', bigShop: 'Big shop', shed: 'Shed', remove: 'Remove', kind: 'Kind', newSeed: 'New', heading: 'Heading (°)',
     siteMoves: 'Moving it takes the buildings, people, guard posts and jeeps on it along.', sizeNote: 'Size in metres (drawn 1.5 times bigger).',
-    sea: 'sea', play: 'Play area', intro: 'opening shot', pier: 'Pier', file: 'File',
+    sea: 'sea', play: 'Play area', intro: 'opening shot', pier: 'Pier', file: 'File', brush: 'Brush size', allSea: 'All sea', allLand: 'All land', startOver: 'Start the coast over:', coastLine: 'coast',
   },
   da: {
     back: 'Tilbage', newMap: 'Ny', copy: 'Kopiér', undo: 'Fortryd', redo: 'Gentag', reseed: 'Nye træer og sten', tryIt: 'Prøv den', save: 'Gem', download: 'Hent', labels: 'Navne',
     saved: 'Gemt', unsaved: 'Ikke gemte ændringer', draft: 'Ikke gemt endnu', saving: 'Gemmer…', saveFailed: 'Kunne ikke gemme', updating: 'Opdaterer…', savedTo: 'Gemt i', ground: 'jord',
     askName: 'Navn på det nye kort:', newName: 'Ny ø', copyOf: 'Kopi af',
     revert: 'Kassér ændringer', revertAsk: 'Kassér de ikke gemte ændringer på dette kort?', deleteDraft: 'Slet dette kort', deleteAsk: 'Slet dette kort? Det blev aldrig gemt i projektet.',
-    tools: { select: 'Vælg', erase: 'Slet', cage: 'Bur', building: 'Bygning', fence: 'Hegn', person: 'Person', guard: 'Vagt', car: 'Jeep', road: 'Vej', lake: 'Sø', hill: 'Bakke', mesa: 'Plateau', volcano: 'Vulkan' },
+    tools: { select: 'Vælg', erase: 'Slet', cage: 'Bur', building: 'Bygning', fence: 'Hegn', person: 'Person', guard: 'Vagt', car: 'Jeep', road: 'Vej', lake: 'Sø', hill: 'Bakke', mesa: 'Plateau', volcano: 'Vulkan', land: 'Land', sea: 'Hav' },
     hints: {
       select: 'Tryk på noget for at vælge det, og træk for at flytte det. Træk i tom jord for at flytte kortet.',
       erase: 'Tryk eller træk hen over ting for at fjerne dem.',
@@ -71,13 +73,15 @@ const T = {
       hill: 'Tegn langs en bakkekam, eller tryk for en rund bakke. En negativ højde graver en lavning.',
       mesa: 'Tegn rundt om plateauets kant, eller tryk for et rundt plateau.',
       volcano: 'Tegn rundt om vulkanens fod, eller tryk for en rund vulkan. Større vulkaner er højere.',
+      land: 'Mal land med penslen. Der kommer strand langs hver kyst.',
+      sea: 'Mal hav med penslen: det skyller landet væk. Til en ø: mal hav hele vejen rundt om den, eller start med Alt hav og mal øen.',
     },
     pan: 'Flyt kortet med to fingre, højre museknap eller mellemrum + træk. Zoom ved at knibe eller med musehjulet.',
     kinds: { paddock: 'Indhegning (start)', cage: 'Bur', building: 'Bygning', fence: 'Hegn', person: 'Person', guard: 'Vagtpost', car: 'Jeep', road: 'Vej', lake: 'Sø', hill: 'Bakke', mesa: 'Plateau', volcano: 'Vulkan', town: 'Hovedgaden', power: 'Kraftværk', docks: 'Havn' },
     map: 'Kort', nameEn: 'Navn (engelsk)', nameDa: 'Navn (dansk)', half: 'Halv bredde', shore: 'Kyst (z)', relief: 'Bølgende bakker', reliefSeed: 'Bakkefrø', trees: 'Træer', palms: 'Andel palmer', bushes: 'Buske', rocks: 'Sten', seed: 'Junglefrø',
     width: 'Bredde', height: 'Højde', depth: 'Dybde', radius: 'Radius', level: 'Jordhøjde', style: 'Farver', hp: 'Bid før den er ødelagt', turn: 'Vend om', shop: 'Butik', bigShop: 'Stor butik', shed: 'Skur', remove: 'Fjern', kind: 'Slags', newSeed: 'Ny', heading: 'Retning (°)',
     siteMoves: 'Flytter du den, kommer bygninger, folk, vagtposter og jeeps på den med.', sizeNote: 'Størrelse i meter (tegnet 1,5 gange større).',
-    sea: 'hav', play: 'Spilleområde', intro: 'åbningsbillede', pier: 'Mole', file: 'Fil',
+    sea: 'hav', play: 'Spilleområde', intro: 'åbningsbillede', pier: 'Mole', file: 'Fil', brush: 'Penselstørrelse', allSea: 'Alt hav', allLand: 'Alt land', startOver: 'Start kysten forfra:', coastLine: 'kyst',
   },
 };
 
@@ -111,7 +115,7 @@ const CSS = `
 type ToolId = keyof typeof T.en.tools;
 const TOOLS: [ToolId, string][] = [
   ['select', '👆'], ['erase', '🧽'], ['cage', '🦖'], ['building', '🏠'], ['fence', '⚡'], ['person', '🧍'], ['guard', '👮'], ['car', '🚙'],
-  ['road', '🛣️'], ['lake', '💧'], ['hill', '⛰️'], ['mesa', '🏜️'], ['volcano', '🌋'],
+  ['road', '🛣️'], ['lake', '💧'], ['hill', '⛰️'], ['mesa', '🏜️'], ['volcano', '🌋'], ['land', '🏝️'], ['sea', '🌊'],
 ];
 const LISTS = { cage: 'cages', building: 'buildings', fence: 'fences', person: 'people', guard: 'guards', car: 'cars', road: 'roads', hill: 'hills', lake: 'lakes', mesa: 'mesas', volcano: 'volcanoes' } as const;
 type ListKind = keyof typeof LISTS;
@@ -152,7 +156,7 @@ function blank(id: string, name: string): MapDef {
   const base = getMap(DEFAULT_MAP);
   return canon({
     ...clone(base), id, name: { en: name, da: name }, seed: Math.floor(Math.random() * 1e5), relief: { scale: 1, seed: r1(Math.random() * 20) },
-    hills: [], cages: [], lakes: [], volcanoes: [], mesas: [], roads: [], fences: [], people: [], guards: [], cars: [],
+    hills: [], cages: [], lakes: [], volcanoes: [], mesas: [], roads: [], fences: [], people: [], guards: [], cars: [], coast: [],
   });
 }
 
@@ -208,7 +212,7 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
   // ---- Editing state, undo and the draft kept in this browser ----
   let tool: ToolId = 'select';
   let sel: Sel | null = null;
-  const opts = { roadW: 7, hillW: 30, hillH: 5, mesaH: 3.5, preset: 0 };
+  const opts = { roadW: 7, hillW: 30, hillH: 5, mesaH: 3.5, preset: 0, brushW: 24 };
   const undo: string[] = [];
   const redo: string[] = [];
   let note = '';
@@ -363,6 +367,9 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
     } else if (k === 'hill') {
       map.hills.push({ pts: tap ? [[r1(x), r1(z)]] : tidy(simplify(soften(resample(raw, 1.5), false), 0.4)), w: opts.hillW, h: opts.hillH });
       sel = { k: 'hill', i: map.hills.length - 1 };
+    } else if (k === 'land' || k === 'sea') {
+      // A brush stroke (a tap is a round blob).
+      (map.coast ??= []).push({ to: k, w: opts.brushW, pts: tap ? [[r1(x), r1(z)]] : tidy(simplify(soften(resample(raw, 2), false), 0.5)) });
     } else if (k === 'lake' || k === 'mesa' || k === 'volcano') {
       const outline = tap ? null : tidy(simplify(soften(resample(raw, 1.5, true), true), 0.35));
       if (outline && (outline.length < 3 || Math.abs(area(outline)) < 40)) return;
@@ -513,8 +520,39 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
     const H = map.half;
     rect(0, 0, H * 2, H * 2, '#e8d36a', false, '6 4');
     text(-H + 4, -H - 5, `${t.play} ±${H}`, 1, 'start');
-    line(-H - 30, map.shore, H + 30, map.shore, '#7fd0e6', 2, '8 5');
-    text(H - 4, map.shore + 5, `z ${n(map.shore)} · ${t.sea} ↓`, 1, 'end');
+    // The coastline, traced from the map as it stands (marching squares over a grid of coastAt(), kept until the coast or the zoom changes).
+    const reach = H + 50;
+    const step = Math.max(1.5, Math.min(4, 6 * px));
+    const key = JSON.stringify([map.shore, map.coast, step, H]);
+    if (coastCache.key !== key) {
+      coastCache.key = key;
+      const cells = Math.ceil((reach * 2) / step);
+      const strokes = map.coast ?? [];
+      const boxes = strokes.map((s) => boxOf(s.pts, s.w / 2));
+      const v: number[] = [];
+      for (let j = 0; j <= cells; j++) for (let i = 0; i <= cells; i++) v.push(coastAt(map.shore, strokes, -reach + i * step, -reach + j * step, boxes));
+      const segs: string[] = [];
+      const at = (i: number, j: number) => v[j * (cells + 1) + i];
+      for (let j = 0; j < cells; j++) {
+        for (let i = 0; i < cells; i++) {
+          const c = [at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)];
+          const corners: Pt[] = [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]];
+          const cross: Pt[] = [];
+          for (let e = 0; e < 4; e++) {
+            const a = c[e];
+            const b = c[(e + 1) % 4];
+            if (a < 0 === b < 0) continue;
+            const f = a / (a - b);
+            const [ai, aj] = corners[e];
+            const [bi, bj] = corners[(e + 1) % 4];
+            cross.push([-reach + (ai + (bi - ai) * f) * step, -reach + (aj + (bj - aj) * f) * step]);
+          }
+          for (let k = 0; k + 1 < cross.length; k += 2) segs.push(`M${r1(cross[k][0])} ${r1(cross[k][1])}L${r1(cross[k + 1][0])} ${r1(cross[k + 1][1])}`);
+        }
+      }
+      coastCache.d = segs.join('');
+    }
+    if (coastCache.d) out.push(`<path d="${coastCache.d}" fill="none" ${stroke('#9fe0f0', 2)} stroke-linecap="round"/>`);
 
     // Ground shapes first, then roads, then things standing on the ground.
     map.hills.forEach((hl, i) => {
@@ -551,8 +589,9 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
     };
     SITES.forEach(site);
     const pier = map.docks;
-    rect(pier.x, (map.shore - 6 + map.shore + 21) / 2, 4.4, 27, '#d8c79a');
-    text(pier.x + 5, map.shore + 18, t.pier, 0.85, 'start', 400);
+    // Where the last rebuild put the pier (it runs out from wherever the land ends north of the docks).
+    rect(pier.x, (PIER.z0 + PIER.z1) / 2, 4.4, PIER.z1 - PIER.z0, '#d8c79a');
+    text(pier.x + 5, PIER.z1 - 3, t.pier, 0.85, 'start', 400);
     map.buildings.forEach((b, i) => {
       const bw = b.w * SCALE;
       const bd = b.d * SCALE;
@@ -609,7 +648,10 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
     // What's being drawn right now.
     if (gesture?.kind === 'draw') {
       const g = gesture;
-      if (g.tool === 'road' || g.tool === 'hill') {
+      if (g.tool === 'land' || g.tool === 'sea') {
+        const d = path(g.pts.length === 1 ? [g.pts[0], [g.pts[0][0] + 0.01, g.pts[0][1]]] : g.pts, false);
+        out.push(`<path d="${d}" fill="none" stroke="${g.tool === 'land' ? 'rgba(232,211,154,0.5)' : 'rgba(74,168,224,0.55)'}" stroke-width="${opts.brushW}" stroke-linecap="round" stroke-linejoin="round"/>`);
+      } else if (g.tool === 'road' || g.tool === 'hill') {
         const wide = g.tool === 'road' ? opts.roadW : opts.hillW;
         out.push(`<path d="${path(g.pts, false)}" fill="none" stroke="rgba(255,225,74,0.25)" stroke-width="${wide}" stroke-linecap="round" stroke-linejoin="round"/>`);
         out.push(`<path d="${path(g.pts, false)}" fill="none" ${stroke(HI, 2)}/>`);
@@ -617,6 +659,7 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
     } else if (gesture?.kind === 'fence') line(gesture.a[0], gesture.a[1], gesture.b[0], gesture.b[1], HI, 3);
     return out.join('');
   }
+  const coastCache = { key: '', d: '' };
   const centre = (pts: Pt[]): [number, number] => {
     let x = 0;
     let z = 0;
@@ -681,6 +724,14 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
       field(t.height, opts.hillH, (v) => (opts.hillH = v), { opt: true });
     }
     if (tool === 'mesa') field(t.height, opts.mesaH, (v) => (opts.mesaH = v), { opt: true, step: 0.1 });
+    if (tool === 'land' || tool === 'sea') {
+      field(t.brush, opts.brushW, (v) => (opts.brushW = THREE.MathUtils.clamp(v, 2, 120)), { opt: true, step: 2 });
+      para(t.startOver);
+      buttons(
+        button(t.allSea, edit(() => ((map.coast = []), (map.shore = -(map.half + 80))))),
+        button(t.allLand, edit(() => ((map.coast = []), (map.shore = map.half + 80)))),
+      );
+    }
 
     if (sel) {
       const s = sel;

@@ -1,4 +1,4 @@
-import { circle, type Pt } from './shapes';
+import { boxOf, circle, coastAt, type Pt } from './shapes';
 import type { MapDef, Shape } from './maps/types';
 
 /**
@@ -15,10 +15,25 @@ export function mapThumb(m: MapDef): string {
     p.length > 1 ? `<polyline points="${p.map(([x, z]) => `${n(x)},${n(z)}`).join(' ')}" fill="none" stroke-linecap="round" stroke-linejoin="round" ${attrs}/>` : '';
   const rect = (x: number, z: number, w: number, d: number, attrs: string) =>
     `<rect x="${n(x - w / 2)}" y="${n(z - d / 2)}" width="${n(w)}" height="${n(d)}" ${attrs}/>`;
-  const out: string[] = [
-    rect(0, 0, 2 * h, 2 * h, 'fill="#2f4a2a"'),
-    rect(0, (m.shore + h) / 2 + 0.5, 2 * h, h - m.shore + 1, 'fill="#1d3a4a"'),
-  ];
+  // Sea, then the land on it: a coarse grid of the painted coast, each row's land as runs of rectangles.
+  const out: string[] = [rect(0, 0, 2 * h, 2 * h, 'fill="#1d3a4a"')];
+  const strokes = m.coast ?? [];
+  const boxes = strokes.map((s) => boxOf(s.pts, s.w / 2));
+  const cells = 64;
+  const cell = (2 * h) / cells;
+  for (let j = 0; j < cells; j++) {
+    const z = -h + (j + 0.5) * cell;
+    for (let i = 0; i < cells; ) {
+      if (coastAt(m.shore, strokes, -h + (i + 0.5) * cell, z, boxes) >= 0) {
+        i++;
+        continue;
+      }
+      let k = i;
+      while (k < cells && coastAt(m.shore, strokes, -h + (k + 0.5) * cell, z, boxes) < 0) k++;
+      out.push(`<rect x="${n(-h + i * cell)}" y="${n(-h + j * cell)}" width="${n((k - i) * cell + 0.3)}" height="${n(cell + 0.3)}" fill="#2f4a2a"/>`);
+      i = k;
+    }
+  }
   for (const s of m.mesas) out.push(poly(pts(s), 'fill="#6b5a42"'));
   for (const s of m.lakes) out.push(poly(pts(s), 'fill="#2d6478" stroke="#a89a6a" stroke-width="1.5"'));
   for (const r of m.roads) out.push(line(r.pts, `stroke="#7a6a52" stroke-width="${n(r.w)}"`));

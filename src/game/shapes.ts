@@ -170,3 +170,22 @@ export function circle(x: number, z: number, r: number, wobble?: number, n = 48)
     return [x + Math.cos(a) * r * k, z + Math.sin(a) * r * k] as Pt;
   });
 }
+
+/** A stroke of the coast brush: everything within w/2 of the path becomes land, or sea. */
+export interface CoastStroke { to: 'land' | 'sea'; w: number; pts: Pt[] }
+
+/**
+ * Signed distance to a painted coast (negative on land, positive at sea): land south of the straight
+ * `line`, then each stroke in turn adds land or washes it away. `boxes` (each stroke's box, padded by
+ * w/2) lets far strokes be skipped: a box is never further away than its stroke.
+ */
+export function coastAt(line: number, strokes: CoastStroke[], x: number, z: number, boxes?: Box[]): number {
+  let d = z - line;
+  strokes.forEach((s, i) => {
+    const o = boxes ? outBox(boxes[i], x, z) : -Infinity;
+    if (s.to === 'land') {
+      if (o < d) d = Math.min(d, toPath(x, z, s.pts) - s.w / 2);
+    } else if (-o > d) d = Math.max(d, s.w / 2 - toPath(x, z, s.pts));
+  });
+  return d;
+}

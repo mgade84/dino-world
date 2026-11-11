@@ -1,5 +1,5 @@
 import type { Txt } from '../../i18n';
-import type { Pt } from '../shapes';
+import type { CoastStroke, Pt } from '../shapes';
 
 /**
  * A world map: everything about the island's layout, as plain data. All positions are in metres on
@@ -9,7 +9,7 @@ import type { Pt } from '../shapes';
  * `shore`, at the bottom of the view ("north" in the code's comments means towards the sea).
  */
 
-export type { Pt } from '../shapes';
+export type { CoastStroke, Pt } from '../shapes';
 export interface Spot { x: number; z: number }
 export interface Round extends Spot { r: number }
 /** A freehand outline: its corners in order, closed back to the first. */
@@ -58,8 +58,17 @@ export interface MapDef {
   mesas: (Shape & { h: number })[];
   /** Roads, kept clear of trees. */
   roads: Road[];
-  /** The north coast: beyond this z the land drops into the sea. */
+  /**
+   * Where the land starts out: everywhere south of this z (a straight north coast). Below -half - 60
+   * there's no land to start with; past half + 60, no sea.
+   */
   shore: number;
+  /**
+   * The coast painted on top of that with the editor's brushes, stroke by stroke in order: land strokes
+   * add land, sea strokes wash it away. A beach runs along every coast. The docks should sit on a coast
+   * facing +z: the pier runs that way out to sea.
+   */
+  coast?: CoastStroke[];
   /** Main Street: a levelled, paved square with a road running east–west through it and street lamps. */
   town: Area;
   /** The power station's fenced yard (its fence, with a gate on the east side, is added for you). */

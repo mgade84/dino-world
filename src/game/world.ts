@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { setWind, treeGeometries, treeMaterial, treeTexture } from './trees';
 import { getMap, type MapDef } from './maps';
 import type { Hill, House, Road, Shape } from './maps/types';
-import { area, boxOf, centroid, circle, nearestOnPoly, outBox, resample, sdPoly, toPath, type Box, type Pt } from './shapes';
+import { area, boxOf, centroid, circle, coastAt, nearestOnPoly, outBox, resample, sdPoly, toPath, type Box, type CoastStroke, type Pt } from './shapes';
 
 /** Buildings are designed in metres and drawn this many times bigger, to match the people. */
 export const SCALE = 1.5;
@@ -59,8 +59,11 @@ export const TOWN: Site = { x: 0, z: 0, w: 0, d: 0, y: 0 };
 export const POWER: Site = { x: 0, z: 0, w: 0, d: 0, y: 0 };
 /** The docks' landing, on the north coast. */
 export const DOCKS: Site = { x: 0, z: 0, w: 0, d: 0, y: 0 };
-/** North of this the land drops away into the sea. */
+/** The shore at the docks: the pier runs out to sea (+z) from here. (The coast itself is coastDist().) */
 export let SHORE = 103;
+/** The coastline: the map's straight `shore` and the strokes painted on it, with coastDist() sampled on a grid for speed. */
+const COAST = { line: 103, strokes: [] as CoastStroke[], boxes: [] as Box[], grid: null as Float32Array | null, n: 0, half: 0 };
+const COAST_STEP = 2;
 /** The docks' pier, out over the sea: its centre line, start, end, width and deck height (level with the landing). */
 export const PIER = { x: 0, z0: 0, z1: 0, w: 4.4, deck: 0 };
 const SITES = [TOWN, POWER, DOCKS];
@@ -78,12 +81,26 @@ export function useMap(map: MapDef) {
   MAP = map;
   HALF = map.half;
   GROUND = (map.half + 55) * 2;
-  SHORE = map.shore;
+  COAST.line = map.shore;
   Object.assign(RELIEF, map.relief);
   Object.assign(PADDOCK, map.paddock);
   Object.assign(TOWN, map.town);
   Object.assign(POWER, map.power);
   Object.assign(DOCKS, map.docks);
+  COAST.strokes = (map.coast ?? []).map((s) => ({ ...s, pts: s.pts.map((p) => [p[0], p[1]] as Pt) }));
+  COAST.boxes = COAST.strokes.map((s) => boxOf(s.pts, s.w / 2));
+  COAST.grid = null;
+  if (COAST.strokes.length) {
+    const half = GROUND / 2;
+    const n = Math.ceil((half * 2) / COAST_STEP) + 1;
+    const grid = new Float32Array(n * n);
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) grid[j * n + i] = coastRaw(-half + i * COAST_STEP, -half + j * COAST_STEP);
+    Object.assign(COAST, { grid, n, half });
+  }
+  // The pier starts where the land ends, heading +z from the docks.
+  let shore = DOCKS.z;
+  while (shore < DOCKS.z + 150 && coastDist(DOCKS.x, shore) < 0) shore += 0.5;
+  SHORE = shore;
   Object.assign(PIER, { x: DOCKS.x, z0: SHORE - 6, z1: SHORE + 21, deck: DOCKS.y });
   const fill = <T>(list: T[], items: T[]) => list.splice(0, list.length, ...items);
   fill(LAKES, map.lakes.map((l) => {
@@ -136,6 +153,27 @@ const smooth = (e0: number, e1: number, x: number) => {
   return t * t * (3 - 2 * t);
 };
 
+/** Signed distance to the coast, worked out from the outlines: negative on land, positive at sea. */
+const coastRaw = (x: number, z: number) => coastAt(COAST.line, COAST.strokes, x, z, COAST.boxes);
+/** Signed distance to the coast: negative on land, positive out at sea (from the grid where there is one). */
+export function coastDist(x: number, z: number) {
+  const g = COAST.grid;
+  if (!g) return coastRaw(x, z);
+  const fx = (x + COAST.half) / COAST_STEP;
+  const fz = (z + COAST.half) / COAST_STEP;
+  const n = COAST.n;
+  if (fx < 0 || fz < 0 || fx >= n - 1 || fz >= n - 1) return coastRaw(x, z);
+  const i = Math.floor(fx);
+  const j = Math.floor(fz);
+  const u = fx - i;
+  const v = fz - j;
+  const a = g[j * n + i];
+  const b = g[j * n + i + 1];
+  const c = g[(j + 1) * n + i];
+  const d = g[(j + 1) * n + i + 1];
+  return (a + (b - a) * u) * (1 - v) + (c + (d - c) * u) * v;
+}
+
 /** Signed distance to the nearest lake's shore (negative in the water), or a big number when there's none within `far`. */
 function lakeEdge(x: number, z: number, far: number) {
   let d = 1e9;
@@ -156,14 +194,17 @@ export function groundY(x: number, z: number): number {
     h = h + (-1.2 - h) * smooth(12, -3, dl);
   }
   for (const m of MESAS) if (outBox(m.box, x, z) < 1.6) h += m.h * smooth(1.6, -0.6, sdPoly(x, z, m.pts));
+  // A beach along every coast: the land eases down to just above the water.
+  const cd = coastDist(x, z);
+  h += (0.6 - h) * smooth(-14, -3, cd);
   // Main Street, the power station and the docks are levelled, easing back into the hills around them; so is the ground under each building.
   for (const site of SITES) h += (site.y - h) * smooth(12, 0, outside(site, x, z));
   for (const pad of PADS) {
     const o = outside(pad, x, z);
     if (o < 5) h += (pad.y - h) * smooth(5, 0, o);
   }
-  // The north coast: a short beach, then the sea floor.
-  h += (-3.5 - h) * smooth(SHORE - 4, SHORE + 8, z);
+  // Past the waterline, the sea floor.
+  h += (-3.5 - h) * smooth(-3, 8, cd);
   return h;
 }
 
@@ -324,7 +365,7 @@ export function buildWorld(): World {
     if (SITES.some((site) => outside(site, x, z) < 4 + clear)) return true;
     if (PADS.some((pad) => outside(pad, x, z) < 2 + clear)) return true;
     if (ROADS.some((r) => outBox(r.box, x, z) < 1.5 + clear && toPath(x, z, r.pts) < r.w / 2 + 1.5 + clear)) return true;
-    if (z > SHORE - 4 - clear) return true;
+    if (coastDist(x, z) > -7 - clear) return true; // the sea and the beach
     if (FENCE_LINES.some((l) => toLine(x, z, l) < 3 + clear)) return true;
     let hit = false;
     near(x, z, (c) => {
@@ -355,6 +396,8 @@ export function buildWorld(): World {
     if (d > 0.55) tmp.lerp(dirt, THREE.MathUtils.clamp((d - 0.55) * 4, 0, 0.8));
     const lake = lakeEdge(x, z, 6);
     if (lake < 6) tmp.lerp(sand, THREE.MathUtils.clamp(1 - lake / 6, 0, 1));
+    // Sand along the coast.
+    tmp.lerp(sand, smooth(-11, -5, coastDist(x, z)));
     // Muddy verges along the roads.
     for (const r of ROADS) {
       if (outBox(r.box, x, z) > 3) continue;
@@ -454,11 +497,45 @@ export function buildWorld(): World {
     group.add(water);
   }
 
-  // ---- The sea off the north coast ----
-  const seaGeo = keep(new THREE.PlaneGeometry(GROUND, 160));
-  seaGeo.rotateX(-Math.PI / 2);
+  // ---- The sea: every square of a grid that comes within a few metres of the coast (its edge is under the
+  // beach), out well past the end of the ground ----
+  const seaGeo = keep(new THREE.BufferGeometry());
+  {
+    const reach = GROUND / 2 + 120;
+    const step = 4;
+    const cells = Math.ceil((reach * 2) / step);
+    const verts: number[] = [];
+    const index: number[] = [];
+    const ids = new Map<number, number>();
+    const vid = (i: number, j: number) => {
+      const key = i * (cells + 1) + j;
+      let v = ids.get(key);
+      if (v === undefined) {
+        v = verts.length / 3;
+        verts.push(-reach + i * step, 0, -reach + j * step);
+        ids.set(key, v);
+      }
+      return v;
+    };
+    for (let i = 0; i < cells; i++) {
+      for (let j = 0; j < cells; j++) {
+        const x = -reach + i * step;
+        const z = -reach + j * step;
+        const wet = Math.max(coastDist(x, z), coastDist(x + step, z), coastDist(x, z + step), coastDist(x + step, z + step), coastDist(x + step / 2, z + step / 2));
+        if (wet < -4) continue;
+        const a = vid(i, j);
+        const b = vid(i + 1, j);
+        const c = vid(i + 1, j + 1);
+        const d = vid(i, j + 1);
+        index.push(a, d, b, b, d, c);
+      }
+    }
+    seaGeo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    seaGeo.setAttribute('normal', new THREE.Float32BufferAttribute(verts.map((_, k) => (k % 3 === 1 ? 1 : 0)), 3));
+    seaGeo.setIndex(index);
+  }
   const sea = new THREE.Mesh(seaGeo, keep(new THREE.MeshStandardMaterial({ color: '#233438', roughness: 0.1, metalness: 0.35 })));
-  sea.position.set(0, 0.02, SHORE + 80 - 6);
+  sea.position.y = 0.02;
   sea.receiveShadow = true;
   sea.userData.noFade = true;
   group.add(sea);
@@ -584,7 +661,7 @@ export function buildWorld(): World {
       const x = gx + wild() * CELLW;
       const z = gz + wild() * CELLW;
       const out = Math.max(Math.abs(x), Math.abs(z)) - HALF;
-      if (out < 3 || z > SHORE - 1) continue;
+      if (out < 3 || coastDist(x, z) > -6) continue;
       if (out < 22) {
         if (wild() < 0.9) tree(x, z, 1.2 + wild() * 0.5, true, wild);
         continue;
@@ -675,7 +752,7 @@ export function buildWorld(): World {
       p.x = THREE.MathUtils.clamp(p.x, -HALF, HALF);
       p.z = THREE.MathUtils.clamp(p.z, -HALF, HALF);
     },
-    inWater: (x, z) => (inLake(x, z, -1) || z > SHORE) && groundY(x, z) < 0,
+    inWater: (x, z) => (inLake(x, z, -1) || coastDist(x, z) > 0) && groundY(x, z) < 0,
     openSpot(r, clear) {
       for (let i = 0; i < 400; i++) {
         const x = (r() * 2 - 1) * (HALF - 8);

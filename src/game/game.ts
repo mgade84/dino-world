@@ -4,7 +4,7 @@ import { ambience, noiseLoop, sfx, toneLoop } from '../engine/audio';
 import { L, UI, type Txt } from '../i18n';
 import { buildSettings } from '../settings';
 import { animate, buildDino, disposeDinoAssets, DINOS, type DinoSpec, type Rig } from './dinos';
-import { buildWorld, floorY, groundY, HALF, MAP, rng, CAGE_SPOTS, POWER, SHORE, useMap } from './world';
+import { buildWorld, coastDist, floorY, groundY, HALF, MAP, rng, CAGE_SPOTS, POWER, useMap } from './world';
 import { getMap, trialMap, type MapDef } from './maps';
 import { CAGE, CAGE_HITS, CAR_COLORS, createCage, createCar, createPerson, disposePark, knockDown, posePerson, scare, updateCar, wreckCar, type Cage, type Car, type Person } from './park';
 import { createTown, type Building } from './buildings';
@@ -1405,7 +1405,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       const near = station.running > 0 ? THREE.MathUtils.clamp(1 - toStation / 45, 0, 1) : 0;
       hum.set(near * 0.08);
       humNoise.set(near * 0.12);
-      surf.set(THREE.MathUtils.clamp(1 - (SHORE - p.z) / 35, 0, 1) * (0.06 + Math.sin(t * 0.45) * 0.03));
+      surf.set(THREE.MathUtils.clamp(1 + coastDist(p.x, p.z) / 35, 0, 1) * (0.06 + Math.sin(t * 0.45) * 0.03));
     }
     cage.update(dt, t);
     for (const c of captives) {
