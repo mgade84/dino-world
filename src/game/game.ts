@@ -25,7 +25,7 @@ import './dino.css';
 /** Rampage: rangers on the island. */
 const RAMPAGE_RANGERS = 4;
 /** Rampage scoring: points per kind of mayhem, the combo window and cap, and how often reinforcements come. */
-const POINTS: Record<string, number> = { smash: 100, scare: 25, knock: 50, snatch: 150, free: 200, destroy: 500, generators: 400, sink: 300, fence: 50, tree: 30 };
+const POINTS: Record<string, number> = { smash: 100, scare: 25, knock: 50, guards: 200, free: 200, destroy: 500, generators: 400, sink: 300, fence: 50, tree: 30 };
 const COMBO = { window: 4, max: 5 };
 const HEAT = { every: 2500, max: 6 };
 /** Energy lost to a dart, and to a live fence. Energy comes back after a few seconds without a hit. */
@@ -279,6 +279,11 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     }
     return world.openSpot(placeRand, clear);
   }
+  /** Keeps people on foot (rangers, visitors) out of the fences too. */
+  function keepOutOnFoot(p: THREE.Vector3, r: number) {
+    keepOut(p, r);
+    fences?.block(p, r);
+  }
   /** Keeps others out of the cages. */
   const still = new THREE.Vector3();
   function keepOut(p: THREE.Vector3, r: number) {
@@ -326,7 +331,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   spawnCaptives();
 
   // ---- Objectives ----
-  const count = { escape: 0, smash: 0, scare: 0, free: 0, destroy: 0, generators: 0, sink: 0 };
+  // `guards` (rangers snatched, shaken and flung, out cold for the rest of the level) is a Rampage stat, not a goal.
+  const count = { escape: 0, smash: 0, scare: 0, free: 0, destroy: 0, generators: 0, sink: 0, guards: 0 };
   const goals: Goal[] = level?.goals ?? [];
   const goalNeed = (g: Goal) => (g.kind === 'escape' ? 1 : g.n);
   const GOAL_LABEL: Record<Goal['kind'], () => string> = {
@@ -343,7 +349,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         })
         .join('');
     } else {
-      goalList.innerHTML = `<li>${S().wrecked} <b>${count.smash}</b></li><li>${S().scaredLabel} <b>${count.scare}</b></li><li>${S().freedLabel} <b>${count.free}</b></li><li>${S().destroyedLabel} <b>${count.destroy}</b></li><li>${S().sunkLabel} <b>${count.sink}</b></li>`;
+      goalList.innerHTML = `<li>${S().wrecked} <b>${count.smash}</b></li><li>${S().scaredLabel} <b>${count.scare}</b></li><li>${S().freedLabel} <b>${count.free}</b></li><li>${S().destroyedLabel} <b>${count.destroy}</b></li><li>${S().sunkLabel} <b>${count.sink}</b></li><li>${S().guardsLabel} <b>${count.guards}</b></li>`;
     }
   }
   const goalsMet = () => story && goals.every((g) => count[g.kind] >= goalNeed(g));
@@ -946,7 +952,6 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
           sfx.thud();
           shake = Math.max(shake, 0.45);
           tension = 1;
-          award('snatch');
         }, 220),
       );
       return;
@@ -1118,7 +1123,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         (q, r) => {
           world.collide(q, r);
           town.collide(q, r);
-          keepOut(q, r);
+          keepOutOnFoot(q, r);
         },
         placeRand,
         {
@@ -1137,7 +1142,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
             shake = Math.max(shake, 0.3);
           },
           onLand: (at) => {
-            // A flung ranger hits the ground: everyone nearby has seen enough.
+            // A flung ranger hits the ground, out cold: one guard neutralized, and everyone nearby has seen enough.
+            progress('guards');
             sfx.thud();
             shake = Math.max(shake, 0.25);
             for (const pp of people) if (Math.hypot(pp.group.position.x - at.x, pp.group.position.z - at.z) < 20) frighten(pp);
@@ -1537,6 +1543,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
           q.addScaledVector(pp.vel, dt);
           world.collide(q, 0.6);
           town.collide(q, 0.6);
+          keepOutOnFoot(q, 0.6);
           q.y = groundY(q.x, q.z);
         }
         if (pp.state === 'idle') {
@@ -1547,7 +1554,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
           away.set(q.x - p.x, 0, q.z - p.z).normalize();
           pp.vel.lerp(away.multiplyScalar(9), 1 - Math.exp(-dt * 5));
           moveOnGround(q, pp.vel, dt, 0.6, false);
-          keepOut(q, 0.6);
+          keepOutOnFoot(q, 0.6);
           q.y = groundY(q.x, q.z);
           run = pp.vel.length();
           if (run > 0.5) pp.heading = turnToward(pp.heading, Math.atan2(pp.vel.x, pp.vel.z), dt * 8);
