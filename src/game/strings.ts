@@ -1,7 +1,7 @@
 import { L, type Lang } from '../i18n';
 
 const en = {
-  loading: 'Loading Kessick Island…',
+  loading: (place: string) => `Loading ${place}…`,
   loadFailed: 'Could not load the island.',
   story: 'Story',
   storySub: 'Break Specimen T-07 out of Primordia',
@@ -78,7 +78,7 @@ const en = {
 export const M: Record<Lang, typeof en> = {
   en,
   da: {
-    loading: 'Henter Kessick Island…',
+    loading: (place: string) => `Henter ${place}…`,
     loadFailed: 'Øen kunne ikke hentes.',
     story: 'Historie',
     storySub: 'Bryd Eksemplar T-07 ud af Primordia',

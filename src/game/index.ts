@@ -3,7 +3,7 @@ import { sfx } from '../engine/audio';
 import { L } from '../i18n';
 import { LEVELS, type Goal, type LevelDef } from './levels';
 import { completeLevel, levelOpen, levelsDone } from './progress';
-import { MAPS, trialMap, type MapDef } from './maps';
+import { MAPS, getMap, trialMap, type MapDef } from './maps';
 import { mapThumb } from './mapthumb';
 import { clock, S } from './strings';
 import './dino.css';
@@ -155,7 +155,7 @@ export const dino: GameDef = {
     function play(lv: LevelDef | null, i: number, map?: MapDef) {
       closeScreen();
       stopRun();
-      loading.textContent = S().loading;
+      loading.textContent = S().loading(L((lv ? getMap(lv.map) : map ?? trialMap() ?? getMap()).name));
       ctx.shell.appendChild(loading);
       loadRun()
         .then((run) => {
