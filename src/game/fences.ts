@@ -30,6 +30,8 @@ export interface Fences {
    * damage; the push-back is applied to `vel`), 'break' if it tore a dead one down, or null.
    */
   collide(p: THREE.Vector3, r: number, vel: THREE.Vector3, speed: number): 'zap' | 'break' | null;
+  /** Keeps someone on foot (a ranger, a visitor) out of standing sections, live or dead: no zap, nothing torn down. */
+  block(p: THREE.Vector3, r: number): void;
   update(dt: number, t: number): void;
   dispose(): void;
 }
@@ -132,6 +134,22 @@ export function createFences(scene: THREE.Scene, live: boolean): Fences {
         }
       }
       return result;
+    },
+    block(p, r) {
+      for (const s of sections) {
+        if (s.down || p.y > s.group.position.y + HEIGHT + 0.5) continue;
+        ab.subVectors(s.b, s.a);
+        ap.set(p.x - s.a.x, p.z - s.a.y);
+        const t = THREE.MathUtils.clamp(ap.dot(ab) / ab.lengthSq(), 0, 1);
+        const cx = s.a.x + ab.x * t;
+        const cz = s.a.y + ab.y * t;
+        const dx = p.x - cx;
+        const dz = p.z - cz;
+        const d = Math.hypot(dx, dz);
+        if (d >= r + 0.2 || d < 1e-4) continue;
+        p.x = cx + (dx / d) * (r + 0.2);
+        p.z = cz + (dz / d) * (r + 0.2);
+      }
     },
     update(dt, t) {
       // Live lamps pulse; a fault flicker now and then.
