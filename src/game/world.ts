@@ -15,6 +15,34 @@ const CELL = 10;
 
 export interface Circle { x: number; z: number; r: number; }
 
+/** A play-area tree that can be pushed over: where its instance is, and how far it has gone. */
+interface Felled {
+  /** Its variant (which InstancedMesh) and instance index. */
+  which: number;
+  i: number;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  scale: [number, number, number];
+  /** How hard it is to push over (1 is an average broadleaf). */
+  size: number;
+  /** 0..1 while pushed: it leans further, and breaks at 1. */
+  strain: number;
+  pushed: boolean;
+  /** How far over it is (radians), how fast it's going, and which way (a unit vector). */
+  angle: number;
+  spin: number;
+  dx: number;
+  dz: number;
+  state: 'up' | 'falling' | 'down';
+  landed: boolean;
+}
+/** A big rock that can be shoved along: its instance, size and how it has rolled. */
+interface Boulder { i: number; s: number; scale: [number, number, number]; q: THREE.Quaternion }
+/** A collider; trees and big rocks carry what's needed to push them about. */
+interface Obstacle extends Circle { tree?: Felled; rock?: Boulder }
+
 /** Small fast PRNG, so the jungle comes out the same every time. */
 export function rng(seed: number) {
   return () => {
@@ -223,10 +251,32 @@ export function slopeAt(x: number, z: number): number {
   return Math.hypot(groundY(x + e, z) - groundY(x - e, z), groundY(x, z + e) - groundY(x, z - e)) / (2 * e);
 }
 
+/** What a dinosaur walking into trees and rocks did to them this frame (see World.shove). */
+export interface Shove {
+  /** 0..1: how hard it is straining against a tree or a rock. */
+  push: number;
+  /** A tree that gave way and started to fall, or null. */
+  felled: { x: number; z: number } | null;
+  /** How far it shoved a rock along, in world units. */
+  rock: number;
+  /** The size of the biggest rock it is shoving (about its radius), for the sound. */
+  rockSize: number;
+}
+
 export interface World {
   group: THREE.Group;
   /** Pushes a circle at (x, z) out of trees, rocks and the volcano; clamps it to the play area. */
   collide(p: THREE.Vector3, r: number): void;
+  /**
+   * A big dinosaur at `p` (already moved by `vel`), `r` across, walking into trees and big rocks with
+   * `power` (1 is a T-Rex). A tree it leans on bends further and further, then breaks and falls away
+   * from it; a rock is shoved along (heavier ones go slower) and rolls. `bound` keeps a rock out of
+   * things the world doesn't know about (buildings). Call before collide(), which then holds the
+   * dinosaur back at whatever didn't give.
+   */
+  shove(p: THREE.Vector3, r: number, vel: THREE.Vector3, power: number, dt: number, bound: (q: THREE.Vector3, r: number) => void): Shove;
+  /** Called when a felled tree hits the ground: where its crown came down, and how big it was. */
+  onLand: ((x: number, z: number, size: number) => void) | null;
   inWater(x: number, z: number): boolean;
   /** A random open spot at least `clear` from any obstacle. */
   openSpot(rand: () => number, clear: number): THREE.Vector3;
@@ -344,16 +394,34 @@ export function buildWorld(): World {
   const lambert = (o: THREE.MeshLambertMaterialParameters) => keep(new THREE.MeshLambertMaterial(o));
 
   // ---- Obstacles, bucketed in a grid for cheap collision checks ----
-  const grid = new Map<string, Circle[]>();
+  // Trees in the play area can be pushed over, and big rocks pushed along (shove()).
+  const grid = new Map<string, Obstacle[]>();
   const key = (cx: number, cz: number) => `${cx},${cz}`;
-  function addCollider(c: Circle) {
-    const cx = Math.floor(c.x / CELL);
-    const cz = Math.floor(c.z / CELL);
-    const k = key(cx, cz);
+  const cellOf = (c: Circle) => key(Math.floor(c.x / CELL), Math.floor(c.z / CELL));
+  function addCollider(c: Obstacle) {
+    const k = cellOf(c);
     if (!grid.has(k)) grid.set(k, []);
     grid.get(k)!.push(c);
+    return c;
   }
-  function near(x: number, z: number, fn: (c: Circle) => void) {
+  function removeCollider(c: Obstacle) {
+    const list = grid.get(cellOf(c));
+    const i = list ? list.indexOf(c) : -1;
+    if (i >= 0) list!.splice(i, 1);
+  }
+  function moveCollider(c: Obstacle, x: number, z: number) {
+    const was = cellOf(c);
+    if (was === key(Math.floor(x / CELL), Math.floor(z / CELL))) {
+      c.x = x;
+      c.z = z;
+      return;
+    }
+    removeCollider(c);
+    c.x = x;
+    c.z = z;
+    addCollider(c);
+  }
+  function near(x: number, z: number, fn: (c: Obstacle) => void) {
     const cx = Math.floor(x / CELL);
     const cz = Math.floor(z / CELL);
     for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) grid.get(key(cx + i, cz + j))?.forEach(fn);
@@ -643,8 +711,12 @@ export function buildWorld(): World {
     const k = isPalm ? kinds.broadleaf.length + 1 : 0;
     const which = k + (far ? kinds.broadleaf.length : Math.floor(r() * kinds.broadleaf.length));
     const s = isPalm ? scale : scale * 1.05;
-    planted[which].push({ p: [x, g, z], s: [s * (0.9 + r() * 0.2), s * (0.9 + r() * 0.25), s * (0.9 + r() * 0.2)], r: [0, r() * Math.PI * 2, 0], c: tints[Math.floor(r() * tints.length)] });
-    if (!far) addCollider({ x, z, r: isPalm ? 0.9 : 1.1 * scale });
+    const it = { p: [x, g, z] as V3, s: [s * (0.9 + r() * 0.2), s * (0.9 + r() * 0.25), s * (0.9 + r() * 0.2)] as V3, r: [0, r() * Math.PI * 2, 0] as V3, c: tints[Math.floor(r() * tints.length)] };
+    planted[which].push(it);
+    if (far) return;
+    const c = addCollider({ x, z, r: isPalm ? 0.9 : 1.1 * scale });
+    // Palms are slender and give way sooner.
+    c.tree = { which, i: planted[which].length - 1, x, y: g, z, yaw: it.r[1], scale: it.s, size: isPalm ? scale * 0.7 : scale, strain: 0, pushed: false, angle: 0, spin: 0, dx: 0, dz: 1, state: 'up', landed: false };
   }
 
   // Dense jungle all round outside the play area, out to the end of the ground (not on the sea side):
@@ -692,8 +764,12 @@ export function buildWorld(): World {
     const z = (rand() * 2 - 1) * HALF;
     if (Math.hypot(x - PADDOCK.x, z - PADDOCK.z) < 14 || inLake(x, z, 2) || blocked(x, z, 3)) continue;
     const s = 0.6 + rand() * 1.8;
-    rocks.push({ p: [x, groundY(x, z) + s * 0.15, z], s: [s * 1.3, s, s * 1.1], r: [rand(), rand() * 3, rand()], c: pick(['#57544f', '#64605a', '#4a4743']) });
-    if (s > 1.3) addCollider({ x, z, r: s * 1.1 });
+    const it = { p: [x, groundY(x, z) + s * 0.15, z] as V3, s: [s * 1.3, s, s * 1.1] as V3, r: [rand(), rand() * 3, rand()] as V3, c: pick(['#57544f', '#64605a', '#4a4743']) };
+    rocks.push(it);
+    if (s > 1.3) {
+      const c = addCollider({ x, z, r: s * 1.1 });
+      c.rock = { i: rocks.length - 1, s, scale: it.s, q: new THREE.Quaternion().setFromEuler(e.set(...it.r)) };
+    }
     n++;
   }
   for (const lake of LAKES) {
@@ -711,6 +787,8 @@ export function buildWorld(): World {
   const treeMat = keep(treeMaterial(keep(treeTexture(rand))));
   /** The play area's trees, with their full model and the cheap one they swap to at low detail. */
   const detailed: { mesh: THREE.InstancedMesh; full: THREE.BufferGeometry; lite: THREE.BufferGeometry }[] = [];
+  /** Each variant's InstancedMesh, for moving a tree that's pushed over. */
+  const treeMeshes: (THREE.InstancedMesh | null)[] = variants.map(() => null);
   variants.forEach((geo, i) => {
     const lite = geo === kinds.broadleafLite || geo === kinds.palmLite;
     if (!planted[i].length) {
@@ -719,16 +797,77 @@ export function buildWorld(): World {
     }
     // The far wall casts no shadows: it's outside the play area, and the shadow pass would draw it all.
     const mesh = instanced(geo, treeMat, planted[i], !lite);
+    treeMeshes[i] = mesh;
     if (!lite) detailed.push({ mesh, full: geo, lite: kinds.broadleaf.includes(geo) ? kinds.broadleafLite : kinds.palmLite });
   });
   instanced(lumpy(new THREE.IcosahedronGeometry(1, 1), 0.25, 12), lambert({ color: '#ffffff' }), bushes);
   if (canopy.length) instanced(lumpy(new THREE.IcosahedronGeometry(1, 1), 0.3, 7), lambert({ color: '#ffffff' }), canopy, false);
-  instanced(lumpy(new THREE.DodecahedronGeometry(1, 1), 0.18, 13), lambert({ color: '#ffffff', ...flat }), rocks);
+  const rockMesh = instanced(lumpy(new THREE.DodecahedronGeometry(1, 1), 0.18, 13), lambert({ color: '#ffffff', ...flat }), rocks);
   instanced(new THREE.CircleGeometry(1, 10).rotateX(-Math.PI / 2), lambert({ color: '#ffffff' }), flowers, false);
 
   const vt = new THREE.Vector3();
-  return {
+  /** Pushes a circle out of the volcanoes' bases. */
+  function offVolcano(p: THREE.Vector3, r: number) {
+    for (const v of VOLCANOES) {
+      if (outBox(v.box, p.x, p.z) > r) continue;
+      const sd = sdPoly(p.x, p.z, v.pts);
+      if (sd >= r) continue;
+      // Out to the nearest point of the base, and on past it by r.
+      const [nx, nz] = nearestOnPoly(p.x, p.z, v.pts);
+      vt.set(nx - p.x, 0, nz - p.z);
+      const d = vt.length();
+      if (d < 1e-4) continue;
+      vt.divideScalar(d);
+      if (sd > 0) vt.negate();
+      p.set(nx + vt.x * r, p.y, nz + vt.z * r);
+    }
+  }
+
+  // ---- Pushing trees over and rocks along ----
+  const Y = new THREE.Vector3(0, 1, 0);
+  const axis = new THREE.Vector3();
+  const qa = new THREE.Quaternion();
+  /** Trees that are bending, falling or bouncing, updated every frame until they lie still. */
+  const moving = new Set<Felled>();
+  function placeTree(f: Felled) {
+    const mesh = treeMeshes[f.which];
+    if (!mesh) return;
+    // Tipped over about the foot of the trunk, away from (dx, dz).
+    qa.setFromAxisAngle(axis.set(f.dz, 0, -f.dx), f.angle);
+    q.setFromAxisAngle(Y, f.yaw).premultiply(qa);
+    m4.compose(p3.set(f.x, f.y, f.z), q, s3.set(...f.scale));
+    mesh.setMatrixAt(f.i, m4);
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+  function placeRock(c: Obstacle) {
+    const k = c.rock!;
+    m4.compose(p3.set(c.x, groundY(c.x, c.z) + k.s * 0.15, c.z), k.q, s3.set(...k.scale));
+    rockMesh.setMatrixAt(k.i, m4);
+    rockMesh.instanceMatrix.needsUpdate = true;
+  }
+  /** Pushes a rock's new centre out of everything else solid. */
+  function settleRock(c: Obstacle, q3: THREE.Vector3, bound: (q: THREE.Vector3, r: number) => void) {
+    near(q3.x, q3.z, (o) => {
+      if (o === c) return;
+      vt.set(q3.x - o.x, 0, q3.z - o.z);
+      const d = vt.length();
+      const min = o.r + c.r;
+      if (d < min && d > 1e-4) q3.addScaledVector(vt.divideScalar(d), min - d);
+    });
+    offVolcano(q3, c.r);
+    bound(q3, c.r);
+    q3.x = THREE.MathUtils.clamp(q3.x, -HALF + c.r, HALF - c.r);
+    q3.z = THREE.MathUtils.clamp(q3.z, -HALF + c.r, HALF - c.r);
+  }
+  const shoved: Shove = { push: 0, felled: null, rock: 0, rockSize: 0 };
+  const touching: Obstacle[] = [];
+  const rq = new THREE.Vector3();
+  /** Leaning over this far (radians) it's lying on its crown and branches. */
+  const DOWN = 1.42;
+
+  const world: World = {
     group,
+    onLand: null,
     collide(p, r) {
       near(p.x, p.z, (c) => {
         vt.set(p.x - c.x, 0, p.z - c.z);
@@ -736,21 +875,79 @@ export function buildWorld(): World {
         const min = c.r + r;
         if (d < min && d > 1e-4) p.addScaledVector(vt.divideScalar(d), min - d);
       });
-      for (const v of VOLCANOES) {
-        if (outBox(v.box, p.x, p.z) > r) continue;
-        const sd = sdPoly(p.x, p.z, v.pts);
-        if (sd >= r) continue;
-        // Out to the nearest point of the base, and on past it by r.
-        const [nx, nz] = nearestOnPoly(p.x, p.z, v.pts);
-        vt.set(nx - p.x, 0, nz - p.z);
-        const d = vt.length();
-        if (d < 1e-4) continue;
-        vt.divideScalar(d);
-        if (sd > 0) vt.negate();
-        p.set(nx + vt.x * r, p.y, nz + vt.z * r);
-      }
+      offVolcano(p, r);
       p.x = THREE.MathUtils.clamp(p.x, -HALF, HALF);
       p.z = THREE.MathUtils.clamp(p.z, -HALF, HALF);
+    },
+    shove(p, r, vel, power, dt, bound) {
+      shoved.push = 0;
+      shoved.felled = null;
+      shoved.rock = 0;
+      shoved.rockSize = 0;
+      if (power <= 0) return shoved;
+      // Collect first: shoving a rock moves it between grid cells.
+      touching.length = 0;
+      near(p.x, p.z, (c) => {
+        if ((c.tree || c.rock) && Math.hypot(c.x - p.x, c.z - p.z) < c.r + r + 0.05) touching.push(c);
+      });
+      const speed = Math.hypot(vel.x, vel.z);
+      for (const c of touching) {
+        const d = Math.hypot(c.x - p.x, c.z - p.z);
+        if (d < 1e-4) continue;
+        const nx = (c.x - p.x) / d;
+        const nz = (c.z - p.z) / d;
+        // Only walking into it counts, not brushing past.
+        const into = vel.x * nx + vel.z * nz;
+        if (into < 1 || into < speed * 0.4) continue;
+        const f = c.tree;
+        if (f) {
+          // It bends more the longer and harder it is pushed; a charge snaps it at once. Bigger trees hold out longer.
+          f.strain += (power * THREE.MathUtils.clamp(into / 5, 0.3, 1.6) * 1.8 * dt) / f.size;
+          f.pushed = true;
+          // It falls the way it's pushed: mostly away from the dinosaur, a little along its path.
+          const fx = nx + (vel.x / speed) * 0.5;
+          const fz = nz + (vel.z / speed) * 0.5;
+          const fl = Math.hypot(fx, fz) || 1;
+          f.dx = fx / fl;
+          f.dz = fz / fl;
+          moving.add(f);
+          shoved.push = Math.max(shoved.push, 0.65 + 0.35 * Math.min(1, f.strain));
+          if (f.strain >= 1) {
+            f.state = 'falling';
+            f.spin = 0.4 + Math.min(1, into / 10) * 0.6;
+            removeCollider(c);
+            shoved.felled = { x: f.x, z: f.z };
+          }
+          continue;
+        }
+        const k = c.rock!;
+        // Heavier rocks (they go up with size squared here, for a fair push) give way more slowly.
+        const give = THREE.MathUtils.clamp((power * 2.2) / (k.s * k.s), 0.15, 0.85);
+        const pen = c.r + r - d;
+        if (pen <= 0) continue;
+        // It goes mostly the way it's pushed, so a push a little off-centre stays on it instead of sliding off.
+        let mx = nx + vel.x / speed;
+        let mz = nz + vel.z / speed;
+        const ml = Math.hypot(mx, mz) || 1;
+        mx /= ml;
+        mz /= ml;
+        const step = (pen * give) / Math.max(0.3, mx * nx + mz * nz);
+        rq.set(c.x + mx * step, 0, c.z + mz * step);
+        settleRock(c, rq, bound);
+        mx = rq.x - c.x;
+        mz = rq.z - c.z;
+        const moved = Math.hypot(mx, mz);
+        shoved.push = Math.max(shoved.push, 0.45 + 0.55 * (1 - give));
+        if (moved < 1e-4) continue;
+        // Rolling over and grinding along: it turns about the axis across its path.
+        qa.setFromAxisAngle(axis.set(mz / moved, 0, -mx / moved), (moved / k.s) * 0.8);
+        k.q.premultiply(qa);
+        moveCollider(c, rq.x, rq.z);
+        placeRock(c);
+        shoved.rock += moved;
+        shoved.rockSize = Math.max(shoved.rockSize, k.s);
+      }
+      return shoved;
     },
     inWater: (x, z) => (inLake(x, z, -1) || coastDist(x, z) > 0) && groundY(x, z) < 0,
     openSpot(r, clear) {
@@ -770,8 +967,40 @@ export function buildWorld(): World {
         d.mesh.computeBoundingBox();
       }
     },
-    update(t) {
+    update(t, dt) {
       setWind(t);
+      for (const f of moving) {
+        if (f.state === 'up') {
+          // Leaning while pushed, shuddering; let go, it straightens up again.
+          if (!f.pushed) f.strain = Math.max(0, f.strain - dt * 0.8);
+          f.angle = 0.24 * f.strain * f.strain + (f.pushed ? Math.sin(t * 29 + f.x) * 0.008 * f.strain : 0);
+          f.pushed = false;
+          if (f.strain === 0) {
+            f.angle = 0;
+            moving.delete(f);
+          }
+        } else {
+          // Falling: slowly at first, then faster and faster as its weight swings out over the foot.
+          f.spin += (2.4 * Math.sin(f.angle) + 0.3) * dt;
+          f.angle += f.spin * dt;
+          if (f.angle >= DOWN) {
+            f.angle = DOWN;
+            if (!f.landed) {
+              f.landed = true;
+              const reach = 4.5 * f.scale[1];
+              world.onLand?.(f.x + f.dx * reach, f.z + f.dz * reach, f.size);
+            }
+            // The crown bounces on its branches once or twice, then lies still.
+            if (f.spin > 0.5) f.spin *= -0.3;
+            else {
+              f.spin = 0;
+              f.state = 'down';
+              moving.delete(f);
+            }
+          }
+        }
+        placeTree(f);
+      }
       for (const { m, x, z, y, s, t: off } of smoke) {
         const k = (t * 0.12 + off) % 1;
         m.position.set(x + Math.sin(k * 6 + off * 9) * 2 * s, y + 1 + k * 22 * s, z + k * 6 * s);
@@ -783,4 +1012,5 @@ export function buildWorld(): World {
       disposables.forEach((d) => d.dispose());
     },
   };
+  return world;
 }

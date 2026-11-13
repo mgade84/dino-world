@@ -563,6 +563,24 @@ export const sfx = {
     voice('sine', 80, 0.35, 0.4, 0, 40);
     for (let i = 0; i < 4; i++) voice('triangle', 1800 + Math.random() * 1500, 0.05, 0.15, 0.1 + i * 0.07);
   },
+  /** A tree trunk giving way: a creak, then splintering cracks. */
+  crack() {
+    voice('sawtooth', 95, 0.12, 0.5, 0, 60, 0.15);
+    for (let i = 0; i < 6; i++) noise(0.05 + Math.random() * 0.04, 0.35, 'bandpass', 1800 + Math.random() * 2400, 0.25 + i * 0.05 + Math.random() * 0.03);
+    noise(0.25, 0.25, 'lowpass', 600, 0.28);
+  },
+  /** A tree coming down: a rush of leaves and branches, and the trunk's thump. */
+  timber(size = 1) {
+    noise(0.9, 0.3, 'bandpass', 1500);
+    noise(0.6, 0.4 * size, 'lowpass', 180);
+    voice('sine', 46, 0.35 * size, 0.6, 0, 28);
+    for (let i = 0; i < 5; i++) noise(0.06, 0.2, 'bandpass', 900 + Math.random() * 1600, 0.05 + i * 0.09);
+  },
+  /** A boulder grinding along the ground. */
+  scrape(size = 1) {
+    noise(0.35, 0.18 * size, 'lowpass', 260 / size);
+    noise(0.25, 0.06, 'bandpass', 1200 + Math.random() * 600);
+  },
   /** A startled "eek!" */
   scream() {
     const f = 700 + Math.random() * 300;

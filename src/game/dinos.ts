@@ -86,7 +86,69 @@ export interface Rig {
   thrashFor: number;
   /** Counts down from 1 while heaving something over with the jaws: the head hauls up and back, the body rears. */
   heave: number;
+  /** How this species leans into a tree or rock it's pushing, and what it does when a tree gives way (none: it can't push). */
+  pushStyle: PushStyle | null;
+  /** 0..1, set by the game: how hard it's pushing against something right now. */
+  push: number;
+  /** The push eased in and out (animate() follows `push` with it). */
+  strain: number;
+  /** Counts down from 1 after a tree gives way: the species' follow-through (set by the game). */
+  shove: number;
+  /** Which way the follow-through goes: -1 left, 1 right. */
+  shoveSide: number;
+  /** 0..1, set by the game: how far a quadruped's gait has gone from a walk into a gallop (see animate()). */
+  gallop: number;
+  /** The gallop eased in and out. */
+  galloping: number;
 }
+
+/**
+ * A quadruped's gallop, a horse's transverse gallop: the hind feet land one just after the other, then the
+ * fore feet, the right fore leading (fractions of the cycle from the left hind's footfall, legs listed
+ * front-left, front-right, hind-left, hind-right), each foot down for only `duty` of the cycle, so after the
+ * leading fore foot pushes off there's a moment with all four in the air.
+ */
+const GALLOP = { land: [0.4, 0.5, 0, 0.1], duty: 0.34 };
+/** A leg's phase offset (in animate()'s terms) that lands its foot `at` that fraction of the cycle. */
+const landAt = (at: number) => -Math.PI / 2 - 2 * Math.PI * at;
+/** The shortest way round from angle a to angle b. */
+const turn = (a: number, b: number) => {
+  const d = (((b - a) % (2 * Math.PI)) + 3 * Math.PI) % (2 * Math.PI) - Math.PI;
+  return d;
+};
+/**
+ * Stretches a leg's phase so its foot is down for `duty` of the cycle instead of half of it: the stance
+ * (phase -π/2 to π/2, where cos > 0) is squeezed into that share, and the swing fills the rest.
+ */
+function warp(ph: number, duty: number) {
+  if (duty === 0.5) return ph;
+  const x = (((ph + Math.PI / 2) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI) / (2 * Math.PI);
+  return x < duty ? -Math.PI / 2 + (Math.PI * x) / duty : Math.PI / 2 + (Math.PI * (x - duty)) / (1 - duty);
+}
+
+/**
+ * - `butt` (T-Rex): head down, snout and brow jammed against it, tail up for balance and legs dug in;
+ *   when it gives, the head wrenches up and aside with a snarl.
+ * - `horns` (Triceratops): head tucked right down so the horns take it, front end low; then a hooking
+ *   upward toss of the head.
+ * - `shoulder` (Stegosaurus): head low, leaning a shoulder into it, rolled onto that side; then a
+ *   swipe of the spiked tail across, the body twisting against it.
+ * - `chest` (Brachiosaurus): leaning its great chest into it, the neck drawn back up out of the way;
+ *   then the neck sweeps back and over as it bears down and through.
+ */
+export type PushStyle = 'butt' | 'horns' | 'shoulder' | 'chest';
+interface PushPose {
+  /** Seconds the follow-through takes. */
+  time: number;
+  /** While pushing: body forward (units) and pitched nose-down, rolled, knees bent; neck bones and head pitched down; tail raised. */
+  bodyZ: number; pitch: number; roll: number; crouch: number; neck: number; head: number; tail: number;
+}
+const PUSH: Record<PushStyle, PushPose> = {
+  butt: { time: 0.75, bodyZ: 0.35, pitch: 0.1, roll: 0, crouch: 0.35, neck: 0.1, head: 0.28, tail: 0.025 },
+  horns: { time: 0.65, bodyZ: 0.25, pitch: 0.08, roll: 0, crouch: 0.45, neck: 0.14, head: 0.4, tail: 0 },
+  shoulder: { time: 0.85, bodyZ: 0.2, pitch: 0.06, roll: 0.08, crouch: 0.35, neck: 0.1, head: 0.25, tail: 0.01 },
+  chest: { time: 1.0, bodyZ: 0.4, pitch: 0.04, roll: 0, crouch: 0.3, neck: -0.05, head: 0.12, tail: 0.02 },
+};
 
 type V3 = [number, number, number];
 type Colors = DinoSpec['colors'];
@@ -635,6 +697,7 @@ function rig(root: THREE.Group, body: THREE.Group, b: Body, o: Partial<Rig>): Ri
     root, body, head: b.fwd[b.fwd.length - 1], legs: [], tail: b.tail, neck: b.fwd.slice(1, -1), jaw: null, chest: b.fwd[0],
     radius: 2, stepRate: 6, roarFor: 1.6, bob: 0.1, phase: 0, roaring: 0, biting: 0, lastStep: 0, wings: [], wingMode: 0, spread: 0, crouch: 0, air: 0,
     sway: 0.06, tailWag: 1, lean: 0, quad: false, thrash: 0, thrashFor: 1, heave: 0,
+    pushStyle: null, push: 0, strain: 0, shove: 0, shoveSide: 1, gallop: 0, galloping: 0,
     ...o,
   };
 }
@@ -693,7 +756,7 @@ function trex(c: Colors): Rig {
     limb(fore, skin, [0, 0, 0], [0, -0.32, 0.05], 0.08, 0.06);
     for (const dy of [-0.04, 0.03]) part(fore, GEO.cone, ivory(), [0.025, 0.13, 0.025], [-side * 0.01, -0.36 + dy, 0.09 - dy * 0.5], [Math.PI - 0.75, 0, 0]);
   }
-  const r = rig(root, body, b, { jaw: jawPivot, radius: 1.8, stepRate: 6.2, bob: 0.12, sway: 0.09 });
+  const r = rig(root, body, b, { jaw: jawPivot, radius: 1.8, stepRate: 6.2, bob: 0.12, sway: 0.09, pushStyle: 'butt' });
   r.legs = [-1, 1].map((side, i) =>
     buildLeg(root, skin, {
       x: side * 0.52, y: hip, z: -0.15, pts: [[0, 0.2, -0.05], [0, -1.0, 0.55], [0, -2.15, -0.05], [0, -2.82, 0.2]],
@@ -742,7 +805,7 @@ function triceratops(c: Colors): Rig {
   part(attach(b, new THREE.Group(), [0, 0.18, 3.3], head), GEO.cone, horn, [0.09, 0.44, 0.09], [0, 0.18, 0], [0.5, 0, 0]);
   part(attach(b, new THREE.Group(), [0, -0.44, 3.72], head), GEO.cone, plainMat('#2e2720', 0.5), [0.15, 0.36, 0.13], [0, 0, 0.1], [Math.PI / 2 + 0.6, 0, 0]);
   eyes(b, skin, 0.52, 0.32, 2.6, 0.065, head);
-  const r = rig(root, body, b, { jaw: jawPivot, radius: 2, stepRate: 6, bob: 0.05, sway: 0.05, quad: true, tailWag: 0.7 });
+  const r = rig(root, body, b, { jaw: jawPivot, radius: 2, stepRate: 6, bob: 0.05, sway: 0.05, quad: true, tailWag: 0.7, pushStyle: 'horns' });
   // Semi-erect forelimbs: the humerus bows outwards and the elbow turns back; hind legs are upright pillars.
   r.legs = ([[-1, 1.05, -1], [1, 1.05, -1], [-1, -0.85, 1], [1, -0.85, 1]] as const).map(([sx, z, bend], i) =>
     buildLeg(root, skin, bend < 0
@@ -803,7 +866,7 @@ function stegosaurus(c: Colors): Rig {
     part(g, GEO.cone, ivory(), [0.075, 0.9, 0.075], [0, 0.42, 0]);
   }
   eyes(b, skin, 0.17, -0.38, 2.95, 0.04, b.fwd[2]);
-  const r = rig(root, body, b, { radius: 2, stepRate: 5.5, bob: 0.05, sway: 0.05, quad: true, tailWag: 0.8 });
+  const r = rig(root, body, b, { radius: 2, stepRate: 5.5, bob: 0.05, sway: 0.05, quad: true, tailWag: 0.8, pushStyle: 'shoulder' });
   // Forelimbs about two thirds the length of the hind legs, so the back is highest over the hips.
   r.legs = ([[-1, 1.15, -1], [1, 1.15, -1], [-1, -0.6, 1], [1, -0.6, 1]] as const).map(([sx, z, bend], i) =>
     buildLeg(root, skin, bend < 0
@@ -834,7 +897,7 @@ function brachiosaurus(c: Colors): Rig {
   // The domed nasal arch over the eyes that marks a brachiosaur's head.
   part(attach(b, new THREE.Group(), [0, 6.0, 3.72], head), GEO.sphere, skin, [0.22, 0.24, 0.34]);
   eyes(b, skin, 0.27, 5.84, 3.9, 0.05, head);
-  const r = rig(root, body, b, { radius: 2.4, stepRate: 4, bob: 0.07, sway: 0.05, quad: true, tailWag: 0.8 });
+  const r = rig(root, body, b, { radius: 2.4, stepRate: 4, bob: 0.07, sway: 0.05, quad: true, tailWag: 0.8, pushStyle: 'chest' });
   // Column-like legs, the front pair the longer: no muscle bulge, an even taper from a thick thigh or
   // shoulder that rises well up into the torso, straight lines, and broad round pads with no toes
   // showing. A short, low, measured stride.
@@ -985,22 +1048,49 @@ export function animate(r: Rig, dt: number, move: number, t: number, speed = 0):
   // Stride: a planted foot travels from one end of the swing to the other in half a cycle.
   // Running swings the legs wider. The step rate follows from the stride and the ground speed,
   // so the feet stay put on the ground instead of gliding over it.
-  const reach = Math.min(...r.legs.map((l) => l.rest * Math.sin(l.amp * (0.55 + 0.65 * move))));
+  // A galloping quadruped reaches further, and each foot is down for less of the cycle, so the cycle covers
+  // more ground: the planted foot must still travel one stride while it's down.
+  r.galloping += ((r.quad ? r.gallop : 0) - r.galloping) * (1 - Math.exp(-dt * 5));
+  const g = r.galloping < 0.01 ? 0 : r.galloping;
+  const duty = 0.5 + (GALLOP.duty - 0.5) * g;
+  const reach = Math.min(...r.legs.map((l) => l.rest * Math.sin(l.amp * (0.55 + 0.65 * move) * (1 + 0.6 * g))));
   const stride = 2 * reach * r.root.scale.x;
-  r.phase += speed > 0 ? (dt * speed * Math.PI) / stride : dt * r.stepRate * move;
+  r.phase += speed > 0 ? (dt * speed * 2 * Math.PI * duty) / stride : dt * r.stepRate * move;
+  // Where it is in the gallop's cycle, 0 at the left hind's footfall; and the moment of flight, when the
+  // whole animal is lifted off the ground after the leading fore foot pushes off.
+  const c = (((r.phase / (2 * Math.PI)) % 1) + 1) % 1;
+  const hop = r.legs[r.legs.length - 1].rest * 0.08 * g * move;
+  const flight = c > 0.82 ? Math.sin((Math.PI * (c - 0.82)) / 0.2) : c < 0.02 ? Math.sin((Math.PI * (c + 0.18)) / 0.2) : 0;
   // Ease the legs back under the body when it stops.
   const fade = Math.min(1, move / 0.12);
+  // Pushing against a tree or a rock (see PushStyle): eased in and out, with a follow-through when a tree gives.
+  const ps = r.pushStyle ? PUSH[r.pushStyle] : null;
+  r.strain += (Math.min(1, r.push) - r.strain) * (1 - Math.exp(-dt * 6));
+  const pz = ps ? r.strain : 0;
+  // `go` runs 0→1 through the follow-through; `env` rises and falls over it; `swing` goes one way then the other.
+  const go = r.shove > 0 ? 1 - r.shove : 0;
+  const env = r.shove > 0 ? Math.sin(Math.PI * go) : 0;
+  const swing = r.shove > 0 ? Math.sin(2 * Math.PI * go) : 0;
+  if (ps) r.shove = Math.max(0, r.shove - dt / ps.time);
+  else r.shove = 0;
+  const side = r.shoveSide;
+  // Straining muscles quiver.
+  const quiver = Math.sin(t * 31) * 0.012 * pz;
+  const style = r.pushStyle;
+  const crouch = Math.min(1, r.crouch + (ps ? ps.crouch * pz : 0) + (style === 'chest' ? env * 0.35 : style === 'horns' ? env * 0.2 : 0));
   let drop = 0;
-  for (const l of r.legs) {
-    const ph = r.phase + l.offset;
+  r.legs.forEach((l, i) => {
+    // Galloping, the legs move from the walk's timing into the gallop's, and stay down for less of it.
+    const off = g ? l.offset + turn(l.offset, landAt(GALLOP.land[i])) * g : l.offset;
+    const ph = warp(r.phase + off, duty);
     // Longer legs swing through a smaller angle for the same stride.
     const swing = Math.sin(ph) * Math.asin(Math.min(1, reach / l.rest)) * fade;
-    // The foot travels forward while the swing angle is falling: lift it then.
-    const lift = Math.max(0, -Math.cos(ph)) * fade * (0.6 + 0.4 * move) * l.lift;
+    // The foot travels forward while the swing angle is falling: lift it then (higher, tucked up, at a gallop).
+    const lift = Math.max(0, -Math.cos(ph)) * fade * (0.6 + 0.4 * move) * l.lift * (1 + 0.2 * g);
     // Crouch: thigh forward, knee bent, ankle flexed. In the air: the whole leg tucked up.
-    const ch = -l.bend * r.crouch * 0.5;
-    const ck = l.bend * r.crouch * 1.05;
-    const ca = -l.bend * r.crouch * 0.65;
+    const ch = -l.bend * crouch * 0.5;
+    const ck = l.bend * crouch * 1.05;
+    const ca = -l.bend * crouch * 0.65;
     const hip = swing + ch - l.bend * r.air * 0.55;
     const knee = l.bend * lift * 0.75 + ck + l.bend * r.air * 1.15;
     const ankle = -l.bend * lift * 0.9 + ca - l.bend * r.air * 0.55;
@@ -1010,24 +1100,28 @@ export function animate(r: Rig, dt: number, move: number, t: number, speed = 0):
     // Keep the foot level on the ground; let the toes hang in the air.
     l.foot.rotation.x = -(hip + knee + ankle) + lift * 0.35 + r.air * 0.7;
     // A crouching leg is shorter, so the hip comes down to keep the foot planted.
-    const d = r.crouch > 0 ? l.rest - legDrop(l, ch, ck, ca) : 0;
-    l.pivot.position.y = l.baseY - d;
+    const d = crouch > 0 ? l.rest - legDrop(l, ch, ck, ca) : 0;
+    l.pivot.position.y = l.baseY - d + hop * flight;
     drop = Math.max(drop, d);
-  }
+  });
   const still = 1 - move;
   const breath = Math.sin(t * 1.6);
   // Weight shift: the body moves out over whichever foot is planted, and the hips swing with the stride.
   // In a biped the first leg (the left) is on the ground while cos(phase) > 0; a quadruped's support
   // pattern turns twice as fast and is led by the hind legs. Standing, the weight drifts slowly from foot to foot.
-  const sway = r.quad ? Math.sin(r.phase * 2) * 0.5 : -Math.cos(r.phase);
+  // (A gallop has no side-to-side weight shift: the legs of each pair land close together.)
+  const sway = (r.quad ? Math.sin(r.phase * 2) * 0.5 : -Math.cos(r.phase)) * (1 - g);
   r.body.position.x = sway * r.sway * move + Math.sin(t * 0.45) * 0.02 * still;
   // The body dips at each footfall (where |sin| peaks for the gait's offsets), rolls onto the planted
   // side and, in bipeds, the pelvis yaws toward the advancing leg.
   const dip = r.quad ? Math.abs(Math.sin(r.phase * 2 + Math.PI / 4)) : Math.abs(Math.sin(r.phase));
-  r.body.position.y = r.legs[0].baseY - drop - dip * r.bob * move + breath * 0.012 * (0.5 + 0.5 * still);
-  r.body.rotation.z = sway * (r.quad ? 0.035 : 0.045) * move;
+  // Galloping, the body sinks as the legs take its weight (most when the fore feet land) and flies with them.
+  const gallopY = hop * (flight - 0.45 * Math.max(0, Math.sin(2 * Math.PI * (c - 0.2))));
+  r.body.position.y = r.legs[0].baseY - drop - dip * r.bob * move * (1 - g) + gallopY + breath * 0.012 * (0.5 + 0.5 * still);
+  r.body.rotation.z = sway * (r.quad ? 0.035 : 0.045) * move + (ps ? ps.roll * pz * side : 0);
   const yaw = r.quad ? 0 : Math.sin(r.phase) * 0.06 * move;
-  r.body.rotation.y = yaw;
+  // The stegosaur's body twists against its tail swipe.
+  r.body.rotation.y = yaw - (style === 'shoulder' ? env * 0.12 * side : 0);
   // Breathing: the chest swells while standing; the first neck bone undoes it so the head stays still.
   const swell = 1 + breath * 0.016 * (0.4 + 0.6 * still);
   r.chest.scale.set(swell, swell, 1);
@@ -1040,7 +1134,11 @@ export function animate(r: Rig, dt: number, move: number, t: number, speed = 0):
     const lag = Math.sin(r.phase - 0.5 - i * 0.55 * wag);
     seg.rotation.y = -yaw * 0.6 + Math.sin(t * 1.1 - i * 0.6) * 0.05 * wag * (0.5 + still) + lag * 0.07 * wag * move * (0.5 + along);
     // In the air the tail lifts to balance; in a crouch it drops.
-    seg.rotation.x = Math.sin(t * 0.8 - i * 0.4) * 0.012 + (r.quad ? 0 : Math.cos(r.phase * 2) * 0.012 * move) - r.air * 0.07 + r.crouch * 0.05;
+    seg.rotation.x = Math.sin(t * 0.8 - i * 0.4) * 0.012 + (r.quad ? 0 : Math.cos(r.phase * 2) * 0.012 * move) - r.air * 0.07 + r.crouch * 0.05 + (ps ? ps.tail * pz : 0)
+      // Galloping, the tail streams out a little higher and rides the body's rocking, a beat behind down its length.
+      + g * move * (0.03 + 0.05 * Math.sin(2 * Math.PI * (c - 0.15) - i * 0.7));
+    // The stegosaur's swipe: a whip across, each segment a little behind the one before, and back.
+    if (style === 'shoulder' && r.shove > 0) seg.rotation.y += side * 0.5 * Math.sin(Math.PI * THREE.MathUtils.clamp(go * 1.5 - i * 0.12, 0, 1));
   });
   // The neck undoes the pelvis yaw, so the head keeps pointing where the animal is going, and looks around idly.
   const nn = r.neck.length;
@@ -1051,28 +1149,38 @@ export function animate(r: Rig, dt: number, move: number, t: number, speed = 0):
   // Heaving: a quick haul up and back with the jaws shut, held a moment, then let go.
   const hv = r.heave > 0 ? Math.sin(Math.PI * Math.min(1, (1 - r.heave) * 1.4)) : 0;
   r.heave = Math.max(0, r.heave - dt / 0.7);
+  // Pushing: the neck bends down to bring the head (or horns) to bear, or back out of the way (a brachiosaur,
+  // whose neck then swings back and over through its follow-through).
+  // Galloping, the head and neck swing down as the fore feet land and up as the hind feet drive.
+  const neckX = g * move * 0.07 * Math.sin(2 * Math.PI * (c - 0.42)) + (ps ? ps.neck * pz : 0) + quiver + (style === 'chest' ? -swing * 0.08 : style === 'horns' ? -env * 0.12 : 0);
   r.neck.forEach((seg, i) => {
     seg.rotation.y = -yaw / nn + Math.sin(t * 0.7 + i * 0.5) * 0.04 * (0.4 + 0.6 * still) + (Math.sin(t * 19 - i * 0.5) * 0.5 * th) / nn;
+    seg.rotation.x = neckX;
   });
   // Roar: rear the head back and open wide.
   const roar = r.roaring > 0 ? Math.sin(Math.PI * Math.min(1, (1 - r.roaring) * 1.6)) : 0;
   r.roaring = Math.max(0, r.roaring - dt / r.roarFor);
-  r.head.rotation.y = Math.sin(t * 19 - nn * 0.5) * 0.28 * th;
+  // Follow-through: the T-Rex wrenches its head up and aside; the triceratops hooks its horns up and across.
+  const toss = style === 'butt' ? 0.6 : style === 'horns' ? 0.95 : 0;
+  r.head.rotation.y = Math.sin(t * 19 - nn * 0.5) * 0.28 * th + (style === 'butt' ? 0.35 : style === 'horns' ? 0.3 : 0) * env * side;
   r.head.userData.base ??= r.head.rotation.x;
   // Bite: lunge forward and down, jaws wide open, then snap shut at the halfway point.
   const lunge = r.biting > 0 ? Math.sin(Math.PI * (1 - r.biting)) : 0;
   const gape = r.biting > 0.5 ? Math.sin(Math.PI * (1 - r.biting) * 2) : 0;
   r.biting = Math.max(0, r.biting - dt / 0.45);
-  r.body.position.z = lunge * 0.8 - hv * 0.5;
-  r.body.rotation.x = lunge * 0.12 - roar * 0.08 - hv * 0.12 + r.lean * (1 - r.spread);
+  r.body.position.z = lunge * 0.8 - hv * 0.5 + (ps ? ps.bodyZ * pz : 0) + (style === 'shoulder' ? 0 : env * 0.3);
+  r.body.rotation.x = lunge * 0.12 - roar * 0.08 - hv * 0.12 + r.lean * (1 - r.spread) + (ps ? ps.pitch * pz : 0) - (toss ? env * 0.06 : 0) + (style === 'chest' ? env * 0.05 : 0)
+    // The gallop's rocking: nose up as the hind legs drive, nose down as the fore feet land and take the weight.
+    + g * move * 0.075 * Math.sin(2 * Math.PI * (c - 0.3));
   // The head stays level against the body's bob, as a predator's does: it nods against the dip of each
   // step (twice per cycle in a biped), and the jaw hangs a little open at a flat-out run.
   const nod = r.quad ? 0 : -Math.cos(r.phase * 2) * 0.025 * move;
-  r.head.rotation.x = r.head.userData.base - roar * 0.45 + lunge * 0.3 + nod + Math.sin(t * 1.3) * 0.015 - th * 0.25 - hv * 0.55;
+  r.head.rotation.x = r.head.userData.base - roar * 0.45 + lunge * 0.3 + nod + Math.sin(t * 1.3) * 0.015 - th * 0.25 - hv * 0.55 + (ps ? ps.head * pz : 0) + quiver - toss * env;
   r.body.rotation.z += Math.sin(t * 19 + 1.2) * 0.04 * th;
   const pant = Math.max(0, move - 0.7) * 0.25;
   // Jaws clamped shut on whatever they hold.
-  if (r.jaw) r.jaw.rotation.x = th > 0 || hv > 0 ? 0.08 : Math.max(roar * 0.7, gape * 0.85, pant);
+  // A T-Rex snarls as it wrenches free.
+  if (r.jaw) r.jaw.rotation.x = th > 0 || hv > 0 ? 0.08 : Math.max(roar * 0.7, gape * 0.85, pant, style === 'butt' ? env * 0.45 : 0);
   // Wings: on the ground they fold and the animal walks on them, the wing arm reaching down in front
   // like a forelimb and stepping in sequence with the hind legs; in the air they spread, beating in flight.
   if (r.wings.length) {

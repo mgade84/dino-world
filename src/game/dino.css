@@ -591,17 +591,21 @@
   }
 }
 
-/* ---------- Energy, hits and sedation ---------- */
+/* ---------- Stamina, energy, hits and sedation ---------- */
 
-.dn-energy {
+/* Stamina (the runners) over energy (levels with hazards), bottom left. */
+.dn-meters {
   position: absolute;
   left: calc(var(--sal) + 12px);
   bottom: calc(var(--sab) + 24px);
   width: min(260px, 40vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   pointer-events: none;
 }
 
-.dn-energy small {
+.dn-meter small {
   display: block;
   margin-bottom: 4px;
   font: 700 12px var(--font-display);
@@ -610,14 +614,14 @@
   color: var(--muted);
 }
 
-.dn-energy i {
+.dn-meter i {
   display: block;
   height: 10px;
   background: rgba(8, 12, 14, 0.7);
   border: 1px solid var(--line);
 }
 
-.dn-energy b {
+.dn-meter b {
   display: block;
   height: 100%;
   background: var(--ok);
@@ -628,6 +632,16 @@
 .dn-energy.low b {
   background: #d9452b;
   animation: dn-pulse 0.7s ease-in-out infinite;
+}
+
+/* Stamina follows every frame, so no easing; run dry, it shows dull until it has some back. */
+.dn-stamina b {
+  background: #e0a832;
+  transition: background 0.3s;
+}
+
+.dn-stamina.low b {
+  background: #7d6436;
 }
 
 /* Red at the edges of the screen when hit. */
@@ -683,7 +697,7 @@
 }
 
 @media (max-width: 700px) {
-  .dn-energy {
+  .dn-meters {
     bottom: calc(var(--sab) + 150px);
   }
 }
@@ -766,7 +780,7 @@
 .dn-hud.in-intro .dn-timer,
 .dn-hud.in-intro .dn-act,
 .dn-hud.in-intro .dn-btn,
-.dn-hud.in-intro .dn-energy {
+.dn-hud.in-intro .dn-meters {
   opacity: 0;
   pointer-events: none;
 }
@@ -775,7 +789,7 @@
 .dn-hud .dn-timer,
 .dn-hud .dn-act,
 .dn-hud .dn-btn,
-.dn-hud .dn-energy {
+.dn-hud .dn-meters {
   transition: opacity 0.5s;
 }
 

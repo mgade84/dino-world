@@ -4,7 +4,7 @@ import { ambience, noiseLoop, sfx, toneLoop } from '../engine/audio';
 import { L, UI, type Txt } from '../i18n';
 import { buildSettings } from '../settings';
 import { animate, buildDino, disposeDinoAssets, DINOS, type DinoSpec, type Rig } from './dinos';
-import { buildWorld, coastDist, floorY, groundY, HALF, MAP, rng, CAGE_SPOTS, POWER, useMap } from './world';
+import { buildWorld, coastDist, floorY, groundY, HALF, MAP, rng, CAGE_SPOTS, POWER, useMap, type Shove } from './world';
 import { getMap, trialMap, type MapDef } from './maps';
 import { CAGE, CAGE_HITS, CAR_COLORS, carFootprint, carTop, createCage, createCar, createPerson, disposePark, knockDown, placeCar, posePerson, pushCar, scare, tipCar, updateCar, type Cage, type Car, type Person } from './park';
 import { createTown, type Building } from './buildings';
@@ -25,13 +25,16 @@ import './dino.css';
 /** Rampage: rangers on the island. */
 const RAMPAGE_RANGERS = 4;
 /** Rampage scoring: points per kind of mayhem, the combo window and cap, and how often reinforcements come. */
-const POINTS: Record<string, number> = { smash: 100, scare: 25, knock: 50, snatch: 150, free: 200, destroy: 500, generators: 400, sink: 300, fence: 50 };
+const POINTS: Record<string, number> = { smash: 100, scare: 25, knock: 50, snatch: 150, free: 200, destroy: 500, generators: 400, sink: 300, fence: 50, tree: 30 };
 const COMBO = { window: 4, max: 5 };
 const HEAT = { every: 2500, max: 6 };
 /** Energy lost to a dart, and to a live fence. Energy comes back after a few seconds without a hit. */
 const DART_HIT = 14;
 const ZAP_HIT = 20;
 const REGEN = { after: 5, rate: 6 };
+/** Running (the big dinosaurs, holding the run button): twice the speed; a full bar of stamina lasts `lasts` seconds,
+ * and it comes back `after` a moment's rest, full again in `refill` seconds. Run dry, it must get some back before running again. */
+const RUN = { speed: 2, lasts: 5, after: 1, refill: 8, again: 0.25 };
 /** A new roar can start once the last one's `roaring` has fallen to this: its head-rear is over. */
 const ROAR_AGAIN = 0.375;
 /** Charging faster than this damages buildings and tears down dead fences. */
@@ -169,7 +172,10 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     </div>
     <div class="dn-fps" ${getShowFps() ? '' : 'hidden'}></div>
     ${story ? '' : `<div class="dn-score"><small>${S().score}</small><b>0</b><i></i></div>`}
-    <div class="dn-energy" hidden><small>${S().energy}</small><i><b></b></i></div>
+    <div class="dn-meters">
+      <div class="dn-meter dn-stamina" hidden><small>${S().stamina}</small><i><b></b></i></div>
+      <div class="dn-meter dn-energy" hidden><small>${S().energy}</small><i><b></b></i></div>
+    </div>
     <div class="dn-hurt"></div>
     <div class="dn-sedate"><h2>${S().sedated}</h2><p>${S().sedatedSub}</p></div>
     <div class="dn-radio" hidden><small>${S().radio}</small><p></p></div>
@@ -195,6 +201,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   const menu = hud.querySelector<HTMLElement>('.dn-menu')!;
   const energyEl = hud.querySelector<HTMLElement>('.dn-energy')!;
   const energyBar = energyEl.querySelector<HTMLElement>('b')!;
+  const staminaEl = hud.querySelector<HTMLElement>('.dn-stamina')!;
+  const staminaBar = staminaEl.querySelector<HTMLElement>('b')!;
   const hurt = hud.querySelector<HTMLElement>('.dn-hurt')!;
   const sedateEl = hud.querySelector<HTMLElement>('.dn-sedate')!;
   const introEl = hud.querySelector<HTMLElement>('.dn-intro')!;
@@ -215,6 +223,11 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   let grounded = true;
   /** Flyers: the jump button is being held. */
   let flying = false;
+  /** Runners: the run button is being held; stamina 0..1, seconds since it last ran, and whether it ran itself out. */
+  let runHeld = false;
+  let stamina = 1;
+  let rested = 0;
+  let winded = false;
   let flapIn = 0;
 
   /** Swaps in a dinosaur. Until it has broken out, it always starts in the middle of its cage. */
@@ -236,8 +249,12 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     player.root.rotation.y = heading;
     scene.add(player.root);
     flying = false;
-    jumpIcon.textContent = s.fly ? S().fly : S().jump;
-    jumpBtn.setAttribute('aria-label', s.fly ? S().fly : S().jump);
+    const label = s.run ? S().run : s.fly ? S().fly : S().jump;
+    jumpIcon.textContent = label;
+    jumpBtn.setAttribute('aria-label', label);
+    jumpBtn.classList.toggle('run', !!s.run);
+    staminaEl.hidden = !s.run;
+    runHeld = false;
   }
 
   /** Levels that begin after the breakout: the paddock's front bars are already bent open, and the dinosaur stands just outside. */
@@ -707,7 +724,10 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     else keys.delete(e.code);
   };
   // Keys held while the window lost focus would otherwise keep the dinosaur walking.
-  const onBlur = () => keys.clear();
+  const onBlur = () => {
+    keys.clear();
+    runHeld = false;
+  };
   window.addEventListener('blur', onBlur);
   window.addEventListener('keydown', onKey);
   window.addEventListener('keyup', onKey);
@@ -716,10 +736,17 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   const from = new THREE.Vector3();
   /** The generator the last moveOnGround() pushed against, if any. */
   let touchedGen: Generator | null = null;
-  /** Returns the building it pushed against, if any. */
-  function moveOnGround(p: THREE.Vector3, v: THREE.Vector3, dt: number, radius: number, airborne: boolean): Building | null {
+  /** What the last moveOnGround() with some `power` did to trees and rocks, if anything. */
+  let shoved: Shove | null = null;
+  const boundRock = (q: THREE.Vector3, r: number) => {
+    town.collide(q, r);
+    keepOut(q, r);
+  };
+  /** Returns the building it pushed against, if any. With `power`, it pushes trees over and rocks along. */
+  function moveOnGround(p: THREE.Vector3, v: THREE.Vector3, dt: number, radius: number, airborne: boolean, power = 0): Building | null {
     from.copy(p);
     p.addScaledVector(v, dt);
+    shoved = power > 0 ? world.shove(p, radius, v, power, dt, boundRock) : null;
     world.collide(p, radius);
     const building = town.collide(p, radius, v);
     touchedGen = station.collide(p, radius, v);
@@ -734,9 +761,13 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     return building;
   }
 
-  /** The jump button: flyers fly while it is held, everyone else jumps. */
+  /** The jump button: the big dinosaurs run while it is held, flyers fly, everyone else jumps. */
   function jumpDown() {
     if (!player || picking) return;
+    if (spec.run) {
+      runHeld = true;
+      return;
+    }
     if (!spec.fly) return jump();
     flying = true;
     if (grounded) {
@@ -747,6 +778,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   }
   function jumpUp() {
     flying = false;
+    runHeld = false;
   }
 
   /** Jumps start with a crouch; update() launches when the legs are loaded. */
@@ -1199,6 +1231,25 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   let pressing = false;
   const pressDir = new THREE.Vector3();
 
+  /** Seconds to the next grinding sound while a rock is being shoved. */
+  let scrapeIn = 0;
+  // A felled tree hitting the ground: a crash felt underfoot nearby, and everyone close by runs for it.
+  world.onLand = (x, z, size) => {
+    sfx.timber(Math.min(1.4, size));
+    if (player) {
+      const d = Math.hypot(player.root.position.x - x, player.root.position.z - z);
+      shake = Math.max(shake, 0.5 * THREE.MathUtils.clamp(1 - d / 30, 0, 1));
+    }
+    const at = new THREE.Vector3(x, groundY(x, z), z);
+    for (const pp of people) {
+      const q = pp.group.position;
+      const d = Math.hypot(q.x - x, q.z - z);
+      if (d < 4) knockDown(pp, at);
+      if (d < 14) frighten(pp);
+    }
+    security?.roar(at, 10);
+  };
+
   function update(dt: number) {
     if (paused) return;
     t += dt;
@@ -1242,7 +1293,20 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       // Flyers in the air go at flying speed, high above trees and cages.
       const aloft = !!spec.fly && (flying || !grounded);
       const high = aloft && p.y - floorY(p.x, p.z) > 7;
-      const want = dir.multiplyScalar((aloft ? spec.fly! : spec.speed) * pace * (wet && !aloft ? 0.55 : 1));
+      // Running: twice the speed while the button is held and there's stamina left.
+      const sprinting = !!spec.run && runHeld && !winded && pace > 0 && grounded;
+      if (sprinting) {
+        stamina = Math.max(0, stamina - dt / RUN.lasts);
+        rested = 0;
+        if (stamina === 0) winded = true;
+      } else {
+        rested += dt;
+        if (rested > RUN.after) stamina = Math.min(1, stamina + dt / RUN.refill);
+        if (winded && stamina >= RUN.again) winded = false;
+      }
+      staminaBar.style.transform = `scaleX(${stamina})`;
+      staminaEl.classList.toggle('low', winded);
+      const want = dir.multiplyScalar((aloft ? spec.fly! : spec.speed * (sprinting ? RUN.speed : 1)) * pace * (wet && !aloft ? 0.55 : 1));
       vel.lerp(want, 1 - Math.exp(-dt * (aloft ? 2.5 : grounded ? 6 : 1.5)));
       if (high) {
         p.addScaledVector(vel, dt);
@@ -1251,7 +1315,27 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       }
       // How hard it is charging, before walls and fences take any of it away.
       const charge = Math.hypot(vel.x, vel.z);
-      const hitBuilding = high ? null : moveOnGround(p, vel, dt, player.radius, !grounded);
+      const was = { x: p.x, z: p.z };
+      // The big ones push trees over and rocks along, on foot and out of the paddock.
+      const power = free && grounded && !high && sedated <= 0 ? spec.shove ?? 0 : 0;
+      const hitBuilding = high ? null : moveOnGround(p, vel, dt, player.radius, !grounded, power);
+      // How fast it actually got along, for the legs: straining at a tree, it treads slowly in place.
+      const made = Math.hypot(p.x - was.x, p.z - was.z) / Math.max(dt, 1e-4);
+      player.push = shoved ? shoved.push : 0;
+      if (shoved?.felled) {
+        player.shove = 1;
+        player.shoveSide = Math.random() < 0.5 ? -1 : 1;
+        sfx.crack();
+        shake = Math.max(shake, 0.35);
+        award('tree');
+      }
+      if (shoved && shoved.rock > 0) {
+        scrapeIn -= dt;
+        if (scrapeIn <= 0) {
+          sfx.scrape(Math.min(1.6, shoved.rockSize / 1.5));
+          scrapeIn = 0.4;
+        }
+      } else scrapeIn = 0;
       if (hitBuilding && free && charge > CHARGE) {
         vel.multiplyScalar(-0.25);
         // Charging only shakes a building: it takes biting to tear pieces out of it.
@@ -1376,12 +1460,15 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       landing = Math.max(0, landing - dt * 2.6);
       const tuck = grounded ? 0 : spec.fly && flying ? 1 : vy > -5 ? 0.9 : 0.3;
       player.air += (tuck - player.air) * (1 - Math.exp(-dt * (grounded ? 20 : 8)));
-      const speed = Math.hypot(vel.x, vel.z);
+      // Pushing, the legs keep to the ground speed (slow, or treading in place); otherwise to the speed it wants.
+      const speed = player.push > 0 ? Math.min(Math.hypot(vel.x, vel.z), Math.max(made, Math.hypot(vel.x, vel.z) * 0.3)) : Math.hypot(vel.x, vel.z);
       if (player.biting > 0) heading = turnToward(heading, biteHeading, dt * 16);
       else if (steer !== null) heading = turnToward(heading, steer, dt * 9);
       else if (speed > 0.6) heading = turnToward(heading, Math.atan2(vel.x, vel.z), dt * 9);
       player.root.rotation.y = heading;
       const move = THREE.MathUtils.clamp(speed / spec.speed, 0, 1);
+      // Four-legged runners break from a walk into a gallop as they speed up past their walking pace.
+      player.gallop = grounded ? THREE.MathUtils.clamp((speed / spec.speed - 1.1) / 0.5, 0, 1) : player.gallop;
       // Heavy footfalls: a thud, and the camera shakes with each one.
       if (animate(player, dt, grounded ? move : 0, t, grounded ? speed : 0) && grounded && (spec.id === 'trex' || spec.id === 'brachio')) {
         sfx.step(spec.id === 'brachio' ? 1.4 : 1.1);

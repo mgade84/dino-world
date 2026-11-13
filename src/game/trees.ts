@@ -552,8 +552,11 @@ export function treeMaterial(map: THREE.Texture) {
       {
         float up = max(transformed.y - 1.0, 0.0);
         vec3 at = vec3(0.0);
+        // A tree pushed over (its up axis tipped towards the ground) lies still.
+        float upright = 1.0;
         #ifdef USE_INSTANCING
           at = instanceMatrix[3].xyz;
+          upright = smoothstep(0.55, 0.97, instanceMatrix[1].y / length(instanceMatrix[1].xyz));
         #endif
         // Four random numbers per tree, from where it stands.
         vec4 rnd = fract(sin(vec4(at.x * 12.99 + at.z * 78.23, at.x * 39.35 + at.z * 11.13, at.x * 73.16 + at.z * 52.27, at.x * 27.71 + at.z * 61.91)) * 43758.55);
@@ -563,9 +566,9 @@ export function treeMaterial(map: THREE.Texture) {
         float gust = 0.45 + 0.35 * sin(uWind * 0.13 + rnd.z * 6.28) + 0.25 * sin(uWind * 0.31 + rnd.w * 6.28);
         float swayA = sin(t * 0.8) + 0.45 * sin(t * 1.37 + 2.0) + 0.2 * sin(t * 2.71 + rnd.z * 6.28);
         float swayB = sin(t * 0.63 + 1.3) + 0.35 * sin(t * 1.91 + rnd.w * 6.28);
-        float k = up * up * 0.005 * gust * (0.7 + rnd.z * 0.6);
+        float k = up * up * 0.005 * gust * (0.7 + rnd.z * 0.6) * upright;
         float dir = rnd.w * 6.28;
-        float flutter = sin(uWind * (2.6 + rnd.x) + position.x * 2.1 + position.z * 1.7 + rnd.y * 6.28) * up * 0.01 * (0.5 + gust);
+        float flutter = sin(uWind * (2.6 + rnd.x) + position.x * 2.1 + position.z * 1.7 + rnd.y * 6.28) * up * 0.01 * (0.5 + gust) * (0.3 + 0.7 * upright);
         transformed.x += (cos(dir) * swayA - sin(dir) * swayB * 0.5) * k + flutter;
         transformed.z += (sin(dir) * swayA + cos(dir) * swayB * 0.5) * k + flutter * 0.6;
         transformed.y += flutter * 0.5;
