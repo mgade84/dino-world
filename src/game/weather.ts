@@ -30,7 +30,7 @@ export function createWeather(scene: THREE.Scene, density = 1): Weather {
     flash: { value: 0 },
   };
   const sky = new THREE.Mesh(
-    keep(new THREE.SphereGeometry(180, 24, 12)),
+    keep(new THREE.SphereGeometry(125, 24, 12)), // inside the camera's far plane (game.ts)
     keep(new THREE.ShaderMaterial({
       uniforms: skyUniforms,
       side: THREE.BackSide,

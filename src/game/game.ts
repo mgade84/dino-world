@@ -4,11 +4,13 @@ import { ambience, noiseLoop, sfx, toneLoop } from '../engine/audio';
 import { L, UI, type Txt } from '../i18n';
 import { buildSettings } from '../settings';
 import { animate, buildDino, disposeDinoAssets, DINOS, type DinoSpec, type Rig } from './dinos';
-import { buildWorld, coastDist, floorY, groundY, HALF, MAP, rng, CAGE_SPOTS, POWER, useMap, type Shove } from './world';
+import { buildWorld, coastDist, floorY, groundY, HALF, MAP, rng, CAGE_SPOTS, POWER, SHIP, shipWalls, useMap, type Shove } from './world';
 import { getMap, trialMap, type MapDef } from './maps';
 import { CAGE, CAGE_HITS, CAR_COLORS, carFootprint, carTop, createCage, createCar, createPerson, disposePark, knockDown, placeCar, posePerson, pushCar, scare, tipCar, updateCar, type Cage, type Car, type Person } from './park';
 import { createTown, type Building } from './buildings';
 import { createFences } from './fences';
+import { createShip } from './ship';
+import { createContainers, type Box, type BoxEvent } from './containers';
 import { createSecurity, HOLD_FOR } from './security';
 import { createStation, type Generator } from './station';
 import { createDocks } from './docks';
@@ -25,12 +27,14 @@ import './dino.css';
 /** Rampage: rangers on the island. */
 const RAMPAGE_RANGERS = 4;
 /** Rampage scoring: points per kind of mayhem, the combo window and cap, and how often reinforcements come. */
-const POINTS: Record<string, number> = { smash: 100, scare: 25, knock: 50, guards: 200, free: 200, destroy: 500, generators: 400, sink: 300, fence: 50, tree: 30 };
+const POINTS: Record<string, number> = { smash: 100, scare: 25, knock: 50, guards: 200, free: 200, destroy: 500, generators: 400, sink: 300, fence: 50, tree: 30, lamp: 20, box: 40 };
 const COMBO = { window: 4, max: 5 };
 const HEAT = { every: 2500, max: 6 };
 /** Energy lost to a dart, and to a live fence. Energy comes back after a few seconds without a hit. */
 const DART_HIT = 14;
 const ZAP_HIT = 20;
+/** A flyer hitting a building faster than `speed`: energy lost, how fast it drops, seconds without lift, and before it can happen again. */
+const BONK = { speed: 4, hit: 8, drop: 6, stall: 0.9, again: 0.8 };
 const REGEN = { after: 5, rate: 6 };
 /** Running (the big dinosaurs, holding the run button): twice the speed; a full bar of stamina lasts `lasts` seconds,
  * and it comes back `after` a moment's rest, full again in `refill` seconds. Run dry, it must get some back before running again. */
@@ -63,6 +67,8 @@ const JUMP = 17;
 const WINDUP = 0.17;
 /** Steepest ground a dinosaur can walk up (rise over run); cliffs need a jump. */
 const CLIMB = 0.9;
+/** The most the ground can rise under the dinosaur in one frame (a step up a slope at a run); any more is a wall. */
+const LIFT = 1.6;
 
 interface Npc { rig: Rig; target: THREE.Vector3; wait: number; speed: number; flee: number; heading: number; vel: THREE.Vector3; stuck: number; }
 /** A dinosaur locked in one of the other cages, waiting to be broken out. */
@@ -105,7 +111,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
 
   const scene = new THREE.Scene();
   scene.fog = new THREE.Fog(SKY, 22, 115);
-  const camera = new THREE.PerspectiveCamera(55, 1, 0.3, 220);
+  // Nothing past the fog's far end shows, so the view stops a little beyond it: everything further away
+  // is culled instead of drawn in fog colour (the sky dome sits inside this range).
+  const camera = new THREE.PerspectiveCamera(55, 1, 0.3, 135);
   // Storm light: a flat grey sky overhead and a weak, cool key light through the clouds.
   const hemi = new THREE.HemisphereLight('#b4c2ca', '#4a5040', LIGHT.hemi);
   scene.add(hemi);
@@ -134,6 +142,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   const fences = fenceMode ? createFences(scene, fenceMode === 'live') : null;
   const station = createStation(scene);
   const docks = createDocks(scene, rng(11));
+  const ship = createShip(scene);
+  const containers = createContainers(scene, MAP.containers ?? []);
+  const boxEvents: BoxEvent[] = [];
   const powered = level?.power !== 'off';
   // Soundscape: the music, the station's hum and the surf, mixed by where the dinosaur is.
   const music = ambience();
@@ -223,6 +234,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   let grounded = true;
   /** Flyers: the jump button is being held. */
   let flying = false;
+  /** Flyers: seconds before another bonk off a building can hurt, and seconds left without lift after one. */
+  let bonkCool = 0;
+  let stalled = 0;
   /** Runners: the run button is being held; stamina 0..1, seconds since it last ran, and whether it ran itself out. */
   let runHeld = false;
   let stamina = 1;
@@ -233,7 +247,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   /** Swaps in a dinosaur. Until it has broken out, it always starts in the middle of its cage. */
   function setPlayer(s: DinoSpec) {
     const inCage = !free;
-    const at = player && !inCage ? player.root.position.clone() : new THREE.Vector3(CAGE.x, groundY(CAGE.x, CAGE.z), CAGE.z);
+    const at = player && !inCage ? player.root.position.clone() : new THREE.Vector3(CAGE.x, floorY(CAGE.x, CAGE.z), CAGE.z);
     if (player) scene.remove(player.root);
     spec = s;
     player = buildDino(s);
@@ -266,9 +280,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     const x = at ? at[0] : CAGE.x + out.x * (CAGE.half + 16);
     const z = at ? at[1] : CAGE.z + out.z * (CAGE.half + 16);
     heading = camYaw = at ? at[2] : Math.atan2(out.x, out.z);
-    player!.root.position.set(x, groundY(x, z), z);
+    player!.root.position.set(x, floorY(x, z), z);
     player!.root.rotation.y = heading;
-    camPos.set(x - Math.sin(heading) * CHASE.back, groundY(x, z) + CHASE.up, z - Math.cos(heading) * CHASE.back);
+    camPos.set(x - Math.sin(heading) * CHASE.back, floorY(x, z) + CHASE.up, z - Math.cos(heading) * CHASE.back);
   }
 
   /** An open spot at least `far` from the cage. */
@@ -282,6 +296,7 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   /** Keeps people on foot (rangers, visitors) out of the fences too. */
   function keepOutOnFoot(p: THREE.Vector3, r: number) {
     keepOut(p, r);
+    containers.block(p, r);
     fences?.block(p, r);
   }
   /** Keeps others out of the cages. */
@@ -742,6 +757,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   const from = new THREE.Vector3();
   /** The generator the last moveOnGround() pushed against, if any. */
   let touchedGen: Generator | null = null;
+  /** How far the last moveOnGround() shoved a stack of containers. */
+  let boxShoved = 0;
   /** What the last moveOnGround() with some `power` did to trees and rocks, if anything. */
   let shoved: Shove | null = null;
   const boundRock = (q: THREE.Vector3, r: number) => {
@@ -756,6 +773,10 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     world.collide(p, radius);
     const building = town.collide(p, radius, v);
     touchedGen = station.collide(p, radius, v);
+    // The ship's walls stop the whole body, not just its middle.
+    shipWalls(p, radius * 0.9);
+    // Shipping containers: big dinosaurs shove the stacks they walk into; everyone else bumps into them.
+    boxShoved = containers.contact(p, radius, v, dt, power);
     const run = Math.hypot(p.x - from.x, p.z - from.z);
     const rise = floorY(p.x, p.z) - from.y;
     const tooSteep = airborne ? rise > 0.25 : run > 1e-4 && rise / run > CLIMB && rise > 0.05;
@@ -807,11 +828,12 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   const facing = new THREE.Vector3();
   let biteHeading = 0;
   type BiteTarget =
-    | { cage: Cage; side: number; captive: Captive | null; building?: undefined; ranger?: undefined; car?: undefined; gen?: undefined }
-    | { building: Building; heading: number; ranger?: undefined; car?: undefined; gen?: undefined }
-    | { ranger: number; building?: undefined; car?: undefined; gen?: undefined }
-    | { car: Car; at: THREE.Vector3; building?: undefined; ranger?: undefined; gen?: undefined }
-    | { gen: Generator; building?: undefined; ranger?: undefined; car?: undefined };
+    | { cage: Cage; side: number; captive: Captive | null; building?: undefined; ranger?: undefined; car?: undefined; gen?: undefined; box?: undefined }
+    | { building: Building; heading: number; ranger?: undefined; car?: undefined; gen?: undefined; box?: undefined }
+    | { ranger: number; building?: undefined; car?: undefined; gen?: undefined; box?: undefined }
+    | { car: Car; at: THREE.Vector3; building?: undefined; ranger?: undefined; gen?: undefined; box?: undefined }
+    | { gen: Generator; building?: undefined; ranger?: undefined; car?: undefined; box?: undefined }
+    | { box: Box; at: THREE.Vector3; building?: undefined; ranger?: undefined; car?: undefined; gen?: undefined };
   function biteTarget(): BiteTarget | null {
     if (!player) return null;
     const p = player.root.position;
@@ -836,6 +858,9 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       if (n.d > reach || (n.d > 1e-3 && -(n.x * facing.x + n.z * facing.z) < 0.4)) continue;
       return { car, at: new THREE.Vector3(n.cx, 0, n.cz) };
     }
+    // A shipping container: knock the top off its stack, or roll it over.
+    const box = containers.biteable(p, facing, reach);
+    if (box) return box;
     // A running generator, where the level lets them be wrecked: tear into its housing.
     if (canBlackOut) {
       const g = station.biteable(p, facing, reach);
@@ -930,6 +955,28 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
           player.heave = 1;
           sfx.clang();
           shake = Math.max(shake, 0.3);
+        }, 220),
+      );
+      return;
+    }
+    if (target.box) {
+      // Jaws into the steel and a heave: the top box comes off the stack, or a lone one rolls over.
+      const box = target.box;
+      const p = player.root.position;
+      biteHeading = Math.atan2(target.at.x - p.x, target.at.z - p.z);
+      sfx.chomp();
+      timers.push(
+        window.setTimeout(() => {
+          if (!alive || !player) return;
+          const got = containers.bite(box, player.root.position);
+          player.heave = 1;
+          sfx.crunch();
+          sfx.clang();
+          shake = Math.max(shake, 0.3);
+          if (got === 'wrecked') {
+            award('box');
+            progress('smash');
+          }
         }, 220),
       );
       return;
@@ -1239,6 +1286,12 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
 
   /** Seconds to the next grinding sound while a rock is being shoved. */
   let scrapeIn = 0;
+  // A lamp post crashing down on the road: a clang, and anyone close by runs for it.
+  town.onLamp = (x, z) => {
+    sfx.clang();
+    sfx.thud();
+    for (const pp of people) if (Math.hypot(pp.group.position.x - x, pp.group.position.z - z) < 10) frighten(pp);
+  };
   // A felled tree hitting the ground: a crash felt underfoot nearby, and everyone close by runs for it.
   world.onLand = (x, z, size) => {
     sfx.timber(Math.min(1.4, size));
@@ -1314,20 +1367,60 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
       staminaEl.classList.toggle('low', winded);
       const want = dir.multiplyScalar((aloft ? spec.fly! : spec.speed * (sprinting ? RUN.speed : 1)) * pace * (wet && !aloft ? 0.55 : 1));
       vel.lerp(want, 1 - Math.exp(-dt * (aloft ? 2.5 : grounded ? 6 : 1.5)));
+      // How hard it is charging (or flying), before walls and fences take any of it away.
+      const charge = Math.hypot(vel.x, vel.z);
+      let flewInto: Building | null = null;
       if (high) {
         p.addScaledVector(vel, dt);
         p.x = THREE.MathUtils.clamp(p.x, -HALF, HALF);
         p.z = THREE.MathUtils.clamp(p.z, -HALF, HALF);
+        // Up here the tall buildings still stand in the way.
+        flewInto = town.collide(p, player.radius, vel);
       }
-      // How hard it is charging, before walls and fences take any of it away.
-      const charge = Math.hypot(vel.x, vel.z);
       const was = { x: p.x, z: p.z };
       // The big ones push trees over and rocks along, on foot and out of the paddock.
       const power = free && grounded && !high && sedated <= 0 ? spec.shove ?? 0 : 0;
       const hitBuilding = high ? null : moveOnGround(p, vel, dt, player.radius, !grounded, power);
+      // A flyer slamming into a building: it hurts a little, it's knocked back off the wall, and its wings lose
+      // their lift for a moment, so it drops before it can climb again.
+      const wall = flewInto ?? (aloft ? hitBuilding : null);
+      bonkCool = Math.max(0, bonkCool - dt);
+      if (wall && charge > BONK.speed && bonkCool <= 0) {
+        bonkCool = BONK.again;
+        stalled = BONK.stall;
+        vy = Math.min(vy, -BONK.drop);
+        vel.multiplyScalar(-0.35);
+        damage(BONK.hit);
+        sfx.thud();
+        shake = Math.max(shake, 0.5);
+        if (town.bump(wall, p)) sfx.crunch();
+      }
+      stalled = Math.max(0, stalled - dt);
       // How fast it actually got along, for the legs: straining at a tree, it treads slowly in place.
       const made = Math.hypot(p.x - was.x, p.z - was.z) / Math.max(dt, 1e-4);
       player.push = shoved ? shoved.push : 0;
+      // Charging into a stack of containers shakes its top box loose; shoving one along grinds.
+      if (power > 0 && charge > CHARGE) {
+        const hit = containers.biteable(p, vel.clone().normalize(), player.radius + 0.6);
+        if (hit && containers.charge(hit.box, p)) {
+          sfx.clang();
+          shake = Math.max(shake, 0.4);
+        }
+      }
+      if (boxShoved > 0) {
+        scrapeIn -= dt;
+        if (scrapeIn <= 0) {
+          sfx.scrape(1.4);
+          scrapeIn = 0.4;
+        }
+      }
+      // Street lamps: a big dinosaur walking into one knocks it over; it shorts out with a fizz of sparks.
+      if (power > 0 && town.knock(p, player.radius, vel)) {
+        sfx.zap();
+        sfx.clang();
+        shake = Math.max(shake, 0.2);
+        award('lamp');
+      }
       if (shoved?.felled) {
         player.shove = 1;
         player.shoveSide = Math.random() < 0.5 ? -1 : 1;
@@ -1430,8 +1523,15 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
         }
       }
       // Gravity, jumping, and walking down hills without bouncing.
-      const g = floorY(p.x, p.z);
-      if (spec.fly && flying) {
+      let g = floorY(p.x, p.z);
+      // Never lifted bodily onto something far higher than a step (the deck over the hold's wall, a ship's side):
+      // whatever left it standing there this frame, it goes back to where it was.
+      if (g - p.y > LIFT && !(spec.fly && flying)) {
+        p.x = was.x;
+        p.z = was.z;
+        g = Math.min(floorY(p.x, p.z), p.y);
+      }
+      if (spec.fly && flying && stalled <= 0) {
         // Climb to cruising height (lower inside the cage, so it still has to bite its way out).
         const alt = g + (free ? 13 : 4.5);
         vy = THREE.MathUtils.clamp((alt - p.y) * 3, -12, 14);
@@ -1608,7 +1708,17 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     sun.position.copy(ground).add(new THREE.Vector3(28, 50, 18));
     sun.target.position.copy(ground);
 
-    town.update(dt);
+    town.update(dt, camera.position);
+    // Containers coming down: a crash of steel (or a splash), felt underfoot nearby; people close by run.
+    boxEvents.length = 0;
+    containers.update(dt, boxEvents);
+    for (const e of boxEvents) {
+      if (e.kind === 'splash') sfx.splat();
+      sfx.clang();
+      sfx.thud();
+      if (player) shake = Math.max(shake, 0.45 * e.hard * THREE.MathUtils.clamp(1 - Math.hypot(player.root.position.x - e.x, player.root.position.z - e.z) / 30, 0, 1));
+      for (const pp of people) if (Math.hypot(pp.group.position.x - e.x, pp.group.position.z - e.z) < 12) frighten(pp);
+    }
     fences?.update(dt, t);
     station.update(dt, t);
     docks.update(dt, t, docksEvents);
@@ -1814,7 +1924,10 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
   renderer.setClearColor(SKY, 1);
   resize();
   setPlayer(heroSpec);
-  if (!level || level.start === 'free') startOutside();
+  // Rampage starts outside the broken paddock, unless the paddock is aboard a ship: then the breakout is half the fun.
+  if (!level) {
+    if (!SHIP.on) startOutside();
+  } else if (level.start === 'free') startOutside();
   else if (Array.isArray(level.start)) startOutside(level.start);
   introEl.hidden = intro < 0;
   hud.classList.toggle('in-intro', intro >= 0);
@@ -1848,6 +1961,8 @@ export function runDino(ctx: GameContext, opts: RunOpts): () => void {
     town.dispose();
     station.dispose();
     docks.dispose();
+    ship?.dispose();
+    containers.dispose();
     fences?.dispose();
     security?.dispose();
     world.dispose();

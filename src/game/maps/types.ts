@@ -20,8 +20,11 @@ export type Shape = Round | Outline;
 export interface Area extends Spot { w: number; d: number; y: number }
 /** A fence line from (x1, z1) to (x2, z2). */
 export type Line = [number, number, number, number];
-/** A road along a freehand path, `w` wide. */
-export interface Road { pts: Pt[]; w: number }
+/**
+ * A road along a freehand path, `w` wide: a muddy dirt track, or with `paved` a city street (asphalt with a
+ * pavement down each side, both inside `w`, and street lamps).
+ */
+export interface Road { pts: Pt[]; w: number; paved?: boolean }
 /** A ridge along a freehand path (one point is a round hill): `w` wide at its foot, `h` high (negative digs a hollow). */
 export interface Hill { pts: Pt[]; w: number; h: number }
 /**
@@ -29,10 +32,22 @@ export interface Hill { pts: Pt[]; w: number; h: number }
  * (drawn 1.5 times bigger, to match the people). `front` is the side with the door (+1 faces +z, the
  * sea; -1 faces -z). `style` picks its colours (STYLES in buildings.ts). A shop has a flat roof, a shed a
  * pitched one and a roller door. `hp` is how many bites wreck it (default 3).
+ *
+ * A shop taller than PODIUM (towers.ts) is a city building: two storeys of shop front at street level, as
+ * detailed and biteable as any shop, and above them its upper floors up to `h`, drawn plainly in the
+ * `facade` look (FACADES in towers.ts) and tinted `tint`, stepping in `setbacks` times on the way up and
+ * finished with a `crown`.
  */
+/** A stack of `n` shipping containers at (x, z), their length turned `a` degrees round from +z (containers.ts). */
+export interface Pile extends Spot { a: number; n: number }
 /** A park jeep, parked at (x, z) facing `a` degrees round from +z (90 faces +x). */
 export interface CarSpot extends Spot { a: number }
-export interface House extends Spot { w: number; d: number; h: number; style: number; front: 1 | -1; kind?: 'shop' | 'shed'; hp?: number }
+export interface House extends Spot {
+  w: number; d: number; h: number; style: number; front: 1 | -1; kind?: 'shop' | 'shed'; hp?: number;
+  facade?: number; tint?: string; setbacks?: number; crown?: Crown;
+}
+/** What tops a tall building: a plain roof with plant rooms, a water tank on a stand, a radio mast, a stepped spire, a helipad or a glass pyramid. */
+export type Crown = 'flat' | 'tank' | 'mast' | 'spire' | 'helipad' | 'pyramid';
 
 export interface MapDef {
   id: string;
@@ -69,12 +84,24 @@ export interface MapDef {
    * facing +z: the pier runs that way out to sea.
    */
   coast?: CoastStroke[];
+  /** Paved ground (city blocks, squares, the port): concrete instead of grass, and nothing grows there. */
+  paving?: Shape[];
+  /** Where the coast is a quay: a concrete wall straight down into deep water instead of a beach. */
+  quays?: Shape[];
   /** Main Street: a levelled, paved square with a road running east–west through it and street lamps. */
   town: Area;
   /** The power station's fenced yard (its fence, with a gate on the east side, is added for you). */
   power: Area;
   /** The docks' landing on the coast; the pier runs north from its centre out to sea. */
   docks: Area;
+  /**
+   * A cargo ship moored alongside a quay (ship.ts): its centre. It lies along x, its gangway coming down
+   * onto the quay on its -z side; put it just off a straight quay facing +z. Its open hold is a good place
+   * for the paddock (see SHIP_DIM in world.ts for where it is); in Rampage the dinosaur then starts locked in.
+   */
+  ship?: Spot;
+  /** Stacks of shipping containers, on the quay or a ship's deck: pushed about, bitten and knocked down. */
+  containers?: Pile[];
   /** Buildings: shops and sheds that can be bitten apart. The ground under each is levelled. */
   buildings: House[];
   /** Electric fence lines across the jungle (live or dead per level). */

@@ -1,6 +1,10 @@
 import * as THREE from 'three';
-import { groundY, HOUSES, rng, SCALE, TOWN } from './world';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { groundY, HOUSES, ROADS, rng, SCALE, SIDEWALK, TOWN, outside } from './world';
 import { bake } from './merge';
+import { resample, toPath } from './shapes';
+import { buildTowers, PODIUM, PODIUM_H, towerTop } from './towers';
+import type { House } from './maps/types';
 
 /**
  * Main Street's buildings (and the boat shed at the docks), each made of pre-broken pieces: wall
@@ -41,8 +45,11 @@ export interface Building {
   /** Wrecked once it has taken `hp` bites; it still stands (and blocks) either way. */
   state: 'standing' | 'wrecked';
   chunks: Chunk[];
-  /** While undamaged, the whole building is drawn as a few merged meshes and the chunks are hidden. */
-  intact: THREE.Group | null;
+  /**
+   * While undamaged, the whole building is drawn as part of its block's merged meshes (see `blocks` in
+   * createTown) and its chunks are hidden; this takes it out of them, to be drawn piece by piece.
+   */
+  release: (() => void) | null;
   /** Shakes after a hit. */
   shake: number;
   /** Seconds before it can be hit again (one charge shouldn't count as several hits). */
@@ -62,10 +69,35 @@ export interface Town {
   bump(b: Building, from: THREE.Vector3): boolean;
   /** Street lamps and lit windows on or off (they go out in the blackout). */
   setLights(on: boolean): void;
+  /**
+   * A big dinosaur at `p`, `r` across, walking with `vel`: a street lamp it walks into is knocked over, away
+   * from it. Returns where that lamp stood, or null.
+   */
+  knock(p: THREE.Vector3, r: number, vel: THREE.Vector3): { x: number; z: number } | null;
+  /** Called when a knocked-over lamp hits the ground, with where its head came down. */
+  onLamp: ((x: number, z: number) => void) | null;
   /** Spots on the pavement in front of the buildings, for people to stand. */
   pavement(rand: () => number): THREE.Vector3;
-  update(dt: number): void;
+  /** `eye` is the camera: buildings lost in the fog beyond FAR of it aren't drawn. */
+  update(dt: number, eye?: THREE.Vector3): void;
   dispose(): void;
+}
+
+/** A street lamp, standing or knocked over (see `lamps` in createTown). */
+interface Lamp {
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  h: number;
+  arm: number;
+  state: 'up' | 'falling' | 'down';
+  /** How far over it is (radians), how fast it's going, and which way it falls (a unit vector). */
+  angle: number;
+  spin: number;
+  dx: number;
+  dz: number;
+  landed: boolean;
 }
 
 interface Plan {
@@ -89,6 +121,8 @@ interface Plan {
   kind?: 'shop' | 'shed';
   /** What stands on a flat roof. */
   top?: ('ac' | 'vent' | 'tank')[];
+  /** A city building's full height in metres (its upper floors are drawn by towers.ts; `h` is its shop front). */
+  tall?: number;
 }
 
 /** Building colours, picked by a map building's `style`. */
@@ -107,10 +141,21 @@ export const STYLES: { wall: string; roof: string; trim: string; awning?: string
  * SCALE times bigger, to match the people (about 2.7 units tall, so 1.5 units a metre): the centre is
  * in world units and the size (w, d, h) in metres.
  */
+const isTall = (b: House) => b.kind !== 'shed' && b.h > PODIUM;
 const plans = (): Plan[] =>
-  HOUSES.map((b) => ({ ...STYLES[((b.style % STYLES.length) + STYLES.length) % STYLES.length], x: b.x, z: b.z, w: b.w, d: b.d, h: b.h, hp: b.hp ?? 3, front: b.front, kind: b.kind }));
+  HOUSES.map((b) => {
+    const s = STYLES[((b.style % STYLES.length) + STYLES.length) % STYLES.length];
+    // A tall building's shop front: its upper floors stand on its roof, so nothing else does.
+    return isTall(b)
+      ? { ...s, x: b.x, z: b.z, w: b.w, d: b.d, h: PODIUM_H, hp: b.hp ?? 3, front: b.front, kind: b.kind, top: [], tall: towerTop(b) }
+      : { ...s, x: b.x, z: b.z, w: b.w, d: b.d, h: b.h, hp: b.hp ?? 3, front: b.front, kind: b.kind };
+  });
 
 const GRAVITY = 30;
+/** A knocked-over lamp lies this far over (radians): flat on the road, its head propping it up a little. */
+const LAMP_DOWN = 1.5;
+/** Past this distance from the camera a building is lost in the fog (game.ts fades it out by 115), so it isn't drawn. */
+const FAR = 122;
 /** The most of a building's pieces that can be torn out: what's left always stands. */
 const MAX_TORN = 0.45;
 /** Wall thickness. */
@@ -446,6 +491,8 @@ export function createTown(scene: THREE.Scene): Town {
     for (let k = 0; k < 2; k++) put(rings, ring, mat(k ? '#c9c6bd' : '#b8452a'), [1, 1, 1], [-0.5 + k * 0.9, 1.6, 0]);
   }
 
+  /** Tall buildings' upper floors, built once every shop front stands. */
+  const tall: { b: House; y: number }[] = [];
   const buildings: Building[] = plans().map((p, index) => {
     const rand = rng(31 + index * 17);
     const shed = p.kind === 'shed';
@@ -458,8 +505,9 @@ export function createTown(scene: THREE.Scene): Town {
     scene.add(group);
     const b: Building = {
       group, minX: p.x - hw, maxX: p.x + hw, minZ: p.z - hd, maxZ: p.z + hd,
-      height: p.h * SCALE, hp: p.hp, state: 'standing', chunks: [], intact: null, shake: 0, cool: 0,
+      height: (p.tall ?? p.h) * SCALE, hp: p.hp, state: 'standing', chunks: [], release: null, shake: 0, cool: 0,
     };
+    if (p.tall) tall.push({ b: HOUSES[index], y: base });
     // The street-facing side gets the door and shop windows (a shed's roller door faces the sea).
     const front = p.front ?? (p.z < TOWN.z ? 1 : -1);
     const rows = Math.max(2, Math.round(p.h / 2.3));
@@ -680,42 +728,171 @@ export function createTown(scene: THREE.Scene): Town {
     }
     bake(intact, [], owned);
     group.add(intact);
-    b.intact = intact;
     return b;
   });
 
-  // Street lamps along both pavements.
+  // ---- Undamaged buildings, merged block by block ----
+  // Every undamaged building in a BLOCK-sized square of the map is drawn as one mesh per material: a city's
+  // worth of shop fronts in a few draw calls a block, and whole blocks lost in the fog are skipped. The first
+  // bite or charge takes a building out (its stretch of the merged mesh is dropped out of sight) and its
+  // separate pieces take over.
+  const BLOCK = 64;
+  const blocks: { group: THREE.Group; minX: number; maxX: number; minZ: number; maxZ: number }[] = [];
+  const byBlock = new Map<string, Building[]>();
+  for (const b of buildings) {
+    const k = `${Math.floor(b.group.position.x / BLOCK)},${Math.floor(b.group.position.z / BLOCK)}`;
+    if (!byBlock.has(k)) byBlock.set(k, []);
+    byBlock.get(k)!.push(b);
+  }
+  for (const list of byBlock.values()) {
+    const batches = new Map<THREE.Material, { geos: THREE.BufferGeometry[]; owners: Building[]; shadow: boolean }>();
+    for (const b of list) {
+      const intact = b.group.children[b.group.children.length - 1];
+      b.group.updateMatrixWorld(true);
+      intact.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh || Array.isArray(mesh.material)) return;
+        const batch = batches.get(mesh.material) ?? { geos: [], owners: [], shadow: false };
+        batch.geos.push(mesh.geometry.clone().applyMatrix4(mesh.matrixWorld));
+        batch.owners.push(b);
+        batch.shadow ||= mesh.castShadow;
+        batches.set(mesh.material, batch);
+      });
+      b.group.remove(intact);
+    }
+    const group = new THREE.Group();
+    const ranges = new Map<Building, { pos: THREE.BufferAttribute; start: number; count: number }[]>();
+    for (const [material, batch] of batches) {
+      // All indexed or none, as mergeGeometries needs.
+      const indexed = batch.geos.every((g) => g.index);
+      const geos = batch.geos.map((g) => (indexed || !g.index ? g : g.toNonIndexed()));
+      const merged = mergeGeometries(geos, false);
+      if (!merged) {
+        // Parts that won't merge (it shouldn't happen) are drawn one by one, and hidden on release.
+        geos.forEach((g, i) => {
+          const mesh = new THREE.Mesh(g, material);
+          mesh.castShadow = batch.shadow;
+          owned.push(g);
+          group.add(mesh);
+          const owner = batch.owners[i];
+          if (!ranges.has(owner)) ranges.set(owner, []);
+          ranges.get(owner)!.push({ pos: g.attributes.position as THREE.BufferAttribute, start: 0, count: g.attributes.position.count });
+        });
+        continue;
+      }
+      owned.push(merged);
+      const pos = merged.attributes.position as THREE.BufferAttribute;
+      let start = 0;
+      geos.forEach((g, i) => {
+        const count = g.attributes.position.count;
+        const owner = batch.owners[i];
+        if (!ranges.has(owner)) ranges.set(owner, []);
+        ranges.get(owner)!.push({ pos, start, count });
+        start += count;
+      });
+      batch.geos.forEach((g) => g.dispose());
+      geos.forEach((g) => g.dispose());
+      const mesh = new THREE.Mesh(merged, material);
+      mesh.castShadow = batch.shadow;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+    scene.add(group);
+    blocks.push({ group, minX: Math.min(...list.map((b) => b.minX)), maxX: Math.max(...list.map((b) => b.maxX)), minZ: Math.min(...list.map((b) => b.minZ)), maxZ: Math.max(...list.map((b) => b.maxZ)) });
+    for (const b of list) {
+      b.release = () => {
+        // Its stretch of each merged mesh goes far underground, out of sight and out of the shadows.
+        for (const { pos, start, count } of ranges.get(b) ?? []) {
+          for (let i = start; i < start + count; i++) pos.setXYZ(i, b.group.position.x, -500, b.group.position.z);
+          pos.needsUpdate = true;
+        }
+        for (const c of b.chunks) c.obj.visible = true;
+        b.release = null;
+      };
+    }
+  }
+
+  const towers = buildTowers(scene, tall);
+
+  // ---- Street lamps: along both pavements of Main Street, and the city's paved streets ----
+  // Each lamp is an instance in four instanced meshes (poles, arms, and lit and dark heads), so one can be
+  // knocked over on its own: a big dinosaur walking into it bends it over at the foot, it falls away from
+  // the dinosaur and bounces on the road, and its light goes out.
   const lampOn = keep(new THREE.MeshStandardMaterial({ color: '#fff1c8', emissive: '#ffd98a', emissiveIntensity: 2.2 }));
   const lampOff = mat('#3a3833', 0.5);
   const poleMat = mat('#2d2f31', 0.5, 0.6);
-  const heads: THREE.Mesh[] = [];
+  const lamps: Lamp[] = [];
+  /** A lamp at (x, z), its arm reaching out towards `yaw` (radians round from +z), `h` tall with an arm `arm` long (metres of the world). */
+  const addLamp = (x: number, z: number, yaw: number, h: number, arm: number) =>
+    lamps.push({ x, y: groundY(x, z), z, yaw, h, arm, state: 'up', angle: 0, spin: 0, dx: 0, dz: 1, landed: false });
   for (let k = -2; k <= 2; k++) for (const side of [-1, 1]) {
     const x = TOWN.x + k * 10 + (side > 0 ? 5 : 0);
-    const z = TOWN.z + side * 4.1;
-    const pole = new THREE.Mesh(box, poleMat);
-    pole.scale.set(0.16, 5.5, 0.16);
-    pole.position.set(x, groundY(x, z) + 2.75, z);
-    pole.castShadow = true;
-    scene.add(pole);
-    const arm = new THREE.Mesh(box, poleMat);
-    arm.scale.set(0.1, 0.1, 1.2);
-    arm.position.set(x, groundY(x, z) + 5.45, z - side * 0.55);
-    scene.add(arm);
-    const head = new THREE.Mesh(box, lampOn);
-    head.scale.set(0.45, 0.18, 0.7);
-    head.position.set(x, groundY(x, z) + 5.35, z - side * 1.05);
-    scene.add(head);
-    heads.push(pole, arm, head);
+    addLamp(x, TOWN.z + side * 4.1, side > 0 ? Math.PI : 0, 5.5, 1.2);
   }
-  // Poles and arms as one mesh, lamp heads as another (its material switches with the power).
-  const lampGroup = new THREE.Group();
-  for (const m of heads) {
-    scene.remove(m);
-    lampGroup.add(m);
+  // Along the paved streets: every 13 m or so, on alternate sides, just inside the kerb, leaning out over the
+  // road; not in the crossings, nor on Main Street (which has its own).
+  for (const road of ROADS) {
+    if (!road.paved) continue;
+    const line = resample(road.pts, 13);
+    line.forEach(([x0, z0], i) => {
+      if (i === 0 || i === line.length - 1) return;
+      const [ax, az] = line[i - 1];
+      const [bx, bz] = line[i + 1];
+      const len = Math.hypot(bx - ax, bz - az) || 1;
+      const side = i % 2 ? 1 : -1;
+      const nx = (-(bz - az) / len) * side;
+      const nz = ((bx - ax) / len) * side;
+      const off = road.w / 2 - SIDEWALK + 0.45;
+      const x = x0 + nx * off;
+      const z = z0 + nz * off;
+      if (outside(TOWN, x, z) < 2) return;
+      if (ROADS.some((o) => o !== road && o.paved && toPath(x, z, o.pts) < o.w / 2 + 1)) return;
+      addLamp(x, z, Math.atan2(-nx, -nz), 6.5, 1.6);
+    });
   }
-  scene.add(lampGroup);
-  bake(lampGroup, [], owned);
-  const headMesh = lampGroup.children.find((m) => (m as THREE.Mesh).material === lampOn) as THREE.Mesh;
+  const lampMesh = (m: THREE.Material, shadow: boolean) => {
+    const mesh = new THREE.InstancedMesh(box, m, Math.max(1, lamps.length));
+    mesh.count = lamps.length;
+    mesh.castShadow = shadow;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    return mesh;
+  };
+  const poles = lampMesh(poleMat, true);
+  const arms = lampMesh(poleMat, false);
+  const litHeads = lampMesh(lampOn, false);
+  const darkHeads = lampMesh(lampOff, false);
+  const lampMeshes = [poles, arms, litHeads, darkHeads];
+  const Y = new THREE.Vector3(0, 1, 0);
+  const lampAxis = new THREE.Vector3();
+  const lampQ = new THREE.Quaternion();
+  const lampYaw = new THREE.Quaternion();
+  const noTurn = new THREE.Quaternion();
+  const lampBase = new THREE.Matrix4();
+  const lampPart = new THREE.Matrix4();
+  const lampAt = new THREE.Matrix4();
+  const lampV = new THREE.Vector3();
+  const lampS = new THREE.Vector3();
+  const hidden = new THREE.Matrix4().makeScale(0, 0, 0);
+  function lampPiece(mesh: THREE.InstancedMesh, i: number, x: number, y: number, z: number, sx: number, sy: number, sz: number) {
+    lampPart.compose(lampV.set(x, y, z), noTurn, lampS.set(sx, sy, sz));
+    mesh.setMatrixAt(i, lampAt.multiplyMatrices(lampBase, lampPart));
+  }
+  /** Puts lamp `i` where it stands (or lies): turned to its yaw, then tipped over about its foot away from (dx, dz). */
+  function placeLamp(l: Lamp, i: number) {
+    lampQ.setFromAxisAngle(lampAxis.set(l.dz, 0, -l.dx), l.angle).multiply(lampYaw.setFromAxisAngle(Y, l.yaw));
+    lampBase.compose(lampV.set(l.x, l.y, l.z), lampQ, lampS.set(1, 1, 1));
+    lampPiece(poles, i, 0, l.h / 2, 0, 0.16, l.h, 0.16);
+    lampPiece(arms, i, 0, l.h - 0.05, l.arm / 2 - 0.05, 0.1, 0.1, l.arm);
+    // A standing lamp's head is lit; a fallen one's is dark.
+    lampPiece(l.state === 'up' ? litHeads : darkHeads, i, 0, l.h - 0.15, l.arm - 0.15, 0.45, 0.18, 0.7);
+    (l.state === 'up' ? darkHeads : litHeads).setMatrixAt(i, hidden);
+    for (const m of lampMeshes) m.instanceMatrix.needsUpdate = true;
+  }
+  lamps.forEach(placeLamp);
+  for (const m of lampMeshes) m.computeBoundingSphere();
+  /** Lamps on their way down. */
+  const falling = new Set<number>();
 
   const tmp = new THREE.Vector3();
 
@@ -743,7 +920,7 @@ export function createTown(scene: THREE.Scene): Town {
     }
   }
 
-  return {
+  const town: Town = {
     buildings,
     collide(p, r, vel) {
       let hit: Building | null = null;
@@ -782,11 +959,7 @@ export function createTown(scene: THREE.Scene): Town {
       puff(at, 2, 1.5);
       if (room <= 0) return 'solid';
       // First bite: swap the merged building for its separate pieces.
-      if (b.intact) {
-        b.group.remove(b.intact);
-        b.intact = null;
-        for (const c of b.chunks) c.obj.visible = true;
-      }
+      b.release?.();
       // Tear out the pieces nearest the jaws (measured in the building's own, unscaled space).
       const local = jaw.clone().sub(b.group.position).divideScalar(SCALE);
       const near = b.chunks
@@ -805,13 +978,41 @@ export function createTown(scene: THREE.Scene): Town {
     bump(b, from) {
       if (b.cool > 0) return false;
       b.cool = 0.7;
+      // It shakes, so it has to be drawn on its own from now on.
+      b.release?.();
       b.shake = 1;
       puff(tmp.set(THREE.MathUtils.clamp(from.x, b.minX, b.maxX), b.group.position.y + 0.8, THREE.MathUtils.clamp(from.z, b.minZ, b.maxZ)), 3, 2);
       return true;
     },
+    onLamp: null,
+    knock(p, r, vel) {
+      const speed = Math.hypot(vel.x, vel.z);
+      if (speed < 1) return null;
+      for (let i = 0; i < lamps.length; i++) {
+        const l = lamps[i];
+        if (l.state !== 'up') continue;
+        const dx = l.x - p.x;
+        const dz = l.z - p.z;
+        const d = Math.hypot(dx, dz);
+        if (d > r + 0.35 || d < 1e-4) continue;
+        // Walking into it, not brushing past.
+        const into = (vel.x * dx + vel.z * dz) / d;
+        if (into < 1 || into < speed * 0.3) continue;
+        // Over it goes, mostly away from the dinosaur, a little along its path; harder the faster it came.
+        const fx = dx / d + (vel.x / speed) * 0.5;
+        const fz = dz / d + (vel.z / speed) * 0.5;
+        const fl = Math.hypot(fx, fz) || 1;
+        Object.assign(l, { state: 'falling', dx: fx / fl, dz: fz / fl, spin: 1 + Math.min(1, into / 10) * 1.4 });
+        falling.add(i);
+        placeLamp(l, i);
+        return { x: l.x, z: l.z };
+      }
+      return null;
+    },
     setLights(on) {
-      headMesh.material = on ? lampOn : lampOff;
+      litHeads.material = on ? lampOn : lampOff;
       litGlass.emissiveIntensity = on ? 0.9 : 0;
+      towers.setLights(on);
     },
     pavement(rand) {
       const row = rand() < 0.5 ? -1 : 1;
@@ -819,8 +1020,40 @@ export function createTown(scene: THREE.Scene): Town {
       const z = TOWN.z + row * (4.6 + rand() * 1.2);
       return new THREE.Vector3(x, groundY(x, z), z);
     },
-    update(dt) {
+    update(dt, eye) {
+      // Falling lamps: a thin pole goes over fast, swinging out over its foot, and bounces once or twice.
+      for (const i of falling) {
+        const l = lamps[i];
+        l.spin += (5 * Math.sin(l.angle) + 0.5) * dt;
+        l.angle += l.spin * dt;
+        if (l.angle >= LAMP_DOWN) {
+          l.angle = LAMP_DOWN;
+          if (!l.landed) {
+            l.landed = true;
+            town.onLamp?.(l.x + l.dx * (l.h - 0.3), l.z + l.dz * (l.h - 0.3));
+          }
+          if (l.spin > 0.7) l.spin *= -0.25;
+          else {
+            l.spin = 0;
+            l.state = 'down';
+            falling.delete(i);
+          }
+        }
+        placeLamp(l, i);
+      }
+      if (eye) {
+        for (const k of blocks) {
+          const dx = Math.max(k.minX - eye.x, 0, eye.x - k.maxX);
+          const dz = Math.max(k.minZ - eye.z, 0, eye.z - k.maxZ);
+          k.group.visible = dx * dx + dz * dz < FAR * FAR;
+        }
+      }
       for (const b of buildings) {
+        if (eye) {
+          const dx = Math.max(b.minX - eye.x, 0, eye.x - b.maxX);
+          const dz = Math.max(b.minZ - eye.z, 0, eye.z - b.maxZ);
+          b.group.visible = dx * dx + dz * dz < FAR * FAR;
+        }
         b.cool = Math.max(0, b.cool - dt);
         if (b.shake > 0) {
           b.shake = Math.max(0, b.shake - dt * 3);
@@ -869,9 +1102,15 @@ export function createTown(scene: THREE.Scene): Town {
         scene.remove(b.group);
         for (const c of b.chunks) scene.remove(c.obj);
       }
+      for (const k of blocks) scene.remove(k.group);
       dust.forEach((d) => scene.remove(d.mesh));
-      scene.remove(lampGroup);
+      for (const m of lampMeshes) {
+        scene.remove(m);
+        m.dispose();
+      }
+      towers.dispose();
       owned.forEach((o) => o.dispose());
     },
   };
+  return town;
 }

@@ -6,12 +6,17 @@ import { createFences } from './fences';
 import { LEVELS } from './levels';
 import { DEFAULT_MAP, drafts, getMap, MAPS, setDraft, type MapDef } from './maps';
 import { canon, mapSource } from './maps/source';
-import type { CarSpot, House, Pt, Shape, Spot } from './maps/types';
+import type { CarSpot, Crown, House, Pt, Shape, Spot } from './maps/types';
 import { disposeMerged } from './merge';
 import { CAGE, CAR_COLORS, createCage, createCar, createPerson, disposePark } from './park';
 import { area, boxOf, circle, coastAt, resample, sdPoly, simplify, soften, toPath } from './shapes';
+import { createContainers } from './containers';
+import { createShip } from './ship';
 import { createStation } from './station';
+import { FACADES, PODIUM } from './towers';
 import { buildWorld, groundY, PIER, rng, SCALE, toLine, useMap } from './world';
+
+const CROWNS: Crown[] = ['flat', 'tank', 'mast', 'spire', 'helipad', 'pyramid'];
 
 /**
  * The map editor (#/map, #/map/<id>): the real 3D world drawn straight from above, with the map's
@@ -51,6 +56,8 @@ const T = {
     map: 'Map', nameEn: 'Name (English)', nameDa: 'Name (Danish)', half: 'Half width', shore: 'Shore (z)', relief: 'Rolling hills', reliefSeed: 'Hills seed', trees: 'Trees', palms: 'Share of palms', bushes: 'Bushes', rocks: 'Rocks', seed: 'Jungle seed',
     width: 'Width', height: 'Height', depth: 'Depth', radius: 'Radius', level: 'Ground height', style: 'Colours', hp: 'Bites to wreck', turn: 'Turn round', shop: 'Shop', bigShop: 'Big shop', shed: 'Shed', remove: 'Remove', kind: 'Kind', newSeed: 'New', heading: 'Heading (°)',
     siteMoves: 'Moving it takes the buildings, people, guard posts and jeeps on it along.', sizeNote: 'Size in metres (drawn 1.5 times bigger).',
+    tallNote: 'Taller than 6.2 m: two storeys of shops, and plainer upper floors above them.', facade: 'Facade (0 glass, 1 office, 2 brick, 3 stone, 4 flats, 5 concrete)', tint: 'Tint', setbacks: 'Setbacks', crown: 'Top',
+    crowns: { flat: 'Flat', tank: 'Water tank', mast: 'Mast', spire: 'Spire', helipad: 'Helipad', pyramid: 'Pyramid' }, dirt: 'Dirt track', street: 'Street',
     sea: 'sea', play: 'Play area', intro: 'opening shot', pier: 'Pier', file: 'File', brush: 'Brush size', allSea: 'All sea', allLand: 'All land', startOver: 'Start the coast over:', coastLine: 'coast',
   },
   da: {
@@ -81,6 +88,8 @@ const T = {
     map: 'Kort', nameEn: 'Navn (engelsk)', nameDa: 'Navn (dansk)', half: 'Halv bredde', shore: 'Kyst (z)', relief: 'Bølgende bakker', reliefSeed: 'Bakkefrø', trees: 'Træer', palms: 'Andel palmer', bushes: 'Buske', rocks: 'Sten', seed: 'Junglefrø',
     width: 'Bredde', height: 'Højde', depth: 'Dybde', radius: 'Radius', level: 'Jordhøjde', style: 'Farver', hp: 'Bid før den er ødelagt', turn: 'Vend om', shop: 'Butik', bigShop: 'Stor butik', shed: 'Skur', remove: 'Fjern', kind: 'Slags', newSeed: 'Ny', heading: 'Retning (°)',
     siteMoves: 'Flytter du den, kommer bygninger, folk, vagtposter og jeeps på den med.', sizeNote: 'Størrelse i meter (tegnet 1,5 gange større).',
+    tallNote: 'Højere end 6,2 m: to etager med butikker og mere enkle etager ovenover.', facade: 'Facade (0 glas, 1 kontor, 2 mursten, 3 sten, 4 lejligheder, 5 beton)', tint: 'Farvetone', setbacks: 'Tilbagetrækninger', crown: 'Top',
+    crowns: { flat: 'Fladt', tank: 'Vandtank', mast: 'Mast', spire: 'Spir', helipad: 'Helipad', pyramid: 'Pyramide' }, dirt: 'Grusvej', street: 'Gade',
     sea: 'hav', play: 'Spilleområde', intro: 'åbningsbillede', pier: 'Mole', file: 'Fil', brush: 'Penselstørrelse', allSea: 'Alt hav', allLand: 'Alt land', startOver: 'Start kysten forfra:', coastLine: 'kyst',
   },
 };
@@ -420,6 +429,9 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
     world.update(0, 0);
     s.add(world.group);
     parts.push(world, createTown(s), createStation(s), createDocks(s, () => 0.5), createFences(s, true));
+    const ship = createShip(s);
+    if (ship) parts.push(ship);
+    parts.push(createContainers(s, map.containers ?? []));
     for (const c of [createCage(), ...map.cages.map((c) => createCage(c.x, c.z))]) s.add(c.group);
     const rand = rng(5);
     const stand = (at: Spot, kind: 'visitor' | 'ranger') => {
@@ -761,6 +773,14 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
           button(t.shop, edit(() => delete o.kind), o.kind !== 'shed'),
           button(t.shed, edit(() => (o.kind = 'shed')), o.kind === 'shed'),
         );
+        if (o.kind !== 'shed' && o.h > PODIUM) {
+          para(t.tallNote);
+          field(t.facade, o.facade ?? 1, (v) => (o.facade = THREE.MathUtils.clamp(Math.round(v), 0, FACADES.length - 1)), { step: 1 });
+          field(t.tint, o.tint ?? '#d8d4cc', (v) => (o.tint = v), { text: true });
+          field(t.setbacks, o.setbacks ?? 0, (v) => (o.setbacks = THREE.MathUtils.clamp(Math.round(v), 0, 3)), { step: 1 });
+          para(t.crown);
+          buttons(...CROWNS.map((c) => button(t.crowns[c], edit(() => (o.crown = c)), (o.crown ?? 'flat') === c)));
+        }
       }
       if (isSite(s.k)) {
         field(t.width, o.w, (v) => (o.w = Math.max(6, v)));
@@ -768,7 +788,10 @@ export function mountMapEditor(root: HTMLElement, id = DEFAULT_MAP): () => void 
         field(t.level, o.y, (v) => (o.y = v), { step: 0.1 });
         para(t.siteMoves);
       }
-      if (s.k === 'road') field(t.width, o.w, (v) => (o.w = Math.max(2, v)));
+      if (s.k === 'road') {
+        field(t.width, o.w, (v) => (o.w = Math.max(2, v)));
+        buttons(button(t.dirt, edit(() => delete o.paved), !o.paved), button(t.street, edit(() => (o.paved = true)), !!o.paved));
+      }
       if (s.k === 'hill') {
         field(t.width, o.w, (v) => (o.w = Math.max(4, v)), { step: 1 });
         field(t.height, o.h, (v) => (o.h = v));

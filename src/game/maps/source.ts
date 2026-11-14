@@ -53,7 +53,7 @@ export default map;
 
 const ORDER: (keyof MapDef)[] = [
   'id', 'name', 'seed', 'half', 'relief', 'hills', 'paddock', 'cages', 'lakes', 'volcanoes', 'mesas', 'roads',
-  'shore', 'coast', 'town', 'power', 'docks', 'buildings', 'fences', 'people', 'guards', 'cars', 'plants',
+  'shore', 'coast', 'paving', 'quays', 'town', 'power', 'docks', 'ship', 'containers', 'buildings', 'fences', 'people', 'guards', 'cars', 'plants',
 ];
 
 /** The map with its fields in the usual order, filling in any a hand-written file left out. */

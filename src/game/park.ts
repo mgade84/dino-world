@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { groundY, PADDOCK } from './world';
+import { floorY, groundY, PADDOCK } from './world';
 import { bake } from './merge';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
@@ -135,7 +135,7 @@ export function createCage(cx = CAGE.x, cz = CAGE.z): Cage {
       const x = cx + n.x * half + t.x * s;
       const z = cz + n.z * half + t.z * s;
       // Holder faces outwards (local +z = n), so bending is a rotation about local x.
-      const holder = group(root, [x, groundY(x, z) - 0.3, z], [0, Math.atan2(n.x, n.z), 0]);
+      const holder = group(root, [x, floorY(x, z) - 0.3, z], [0, Math.atan2(n.x, n.z), 0]);
       const lower = group(holder);
       part(lower, GEO.cyl, steel, [0.15, height / 2, 0.15], [0, height / 4, 0]);
       // Each bar carries its share of the horizontal rails, so a bent bar takes its rails with it.
@@ -155,13 +155,13 @@ export function createCage(cx = CAGE.x, cz = CAGE.z): Cage {
       const s = end * (half - gap / 4);
       const x = cx + n.x * half + t.x * s;
       const z = cz + n.z * half + t.z * s;
-      const holder = group(root, [x, groundY(x, z) - 0.3, z], [0, Math.atan2(n.x, n.z), 0]);
+      const holder = group(root, [x, floorY(x, z) - 0.3, z], [0, Math.atan2(n.x, n.z), 0]);
       for (const y of [...RAILS.lower, ...RAILS.upper.map((u) => u + height / 2)]) part(holder, GEO.cyl6, steel, [0.065, gap / 2, 0.065], [0, y, 0], [0, 0, Math.PI / 2]);
     }
     // Footing: a wide slab, and a kerb the bars are set into.
     const mx = cx + n.x * half;
     const mz = cz + n.z * half;
-    const g = groundY(mx, mz);
+    const g = floorY(mx, mz);
     const along = (len: number, across: number, y: number, h: number, m: THREE.Material) =>
       part(root, GEO.box, m, [Math.abs(t.x) * len + Math.abs(n.x) * across, h, Math.abs(t.z) * len + Math.abs(n.z) * across], [mx, g + y, mz]);
     along(2 * half + 1.8, 1.7, 0.05, 0.5, footing).castShadow = false;
@@ -172,7 +172,7 @@ export function createCage(cx = CAGE.x, cz = CAGE.z): Cage {
   const corner = (sx: number, sz: number, out: number): [number, number, number] => {
     const x = cx + sx * (half + out);
     const z = cz + sz * (half + out);
-    return [x, groundY(x, z), z];
+    return [x, floorY(x, z), z];
   };
   const up = new THREE.Vector3(0, 1, 0);
   /** A round strut from a to b. */
@@ -196,12 +196,12 @@ export function createCage(cx = CAGE.x, cz = CAGE.z): Cage {
     const top = new THREE.Vector3(x, g + 6, z).addScaledVector(d, 0.3);
     const foot = new THREE.Vector3(x, g + 0.4, z).addScaledVector(d, 3.4);
     strut(top, foot, 0.13, post);
-    part(root, GEO.box, concrete, [1, 0.6, 1], [foot.x, groundY(foot.x, foot.z) + 0.15, foot.z], [0, Math.PI / 4, 0]);
+    part(root, GEO.box, concrete, [1, 0.6, 1], [foot.x, floorY(foot.x, foot.z) + 0.15, foot.z], [0, Math.PI / 4, 0]);
   }
 
   // The front (-z) side is the gate: a sliding gate on a track, a motor housing, hinges and a lock.
   const front = cz - half;
-  const fg = groundY(cx, front);
+  const fg = floorY(cx, front);
   part(root, GEO.box, dark, [2 * half, 0.08, 0.14], [cx, fg + 0.79, front - 0.32]);
   const [lx, lg, lz] = corner(-1, -1, 0);
   for (const y of [1.6, 4.6, 7.6]) part(root, GEO.box, dark, [0.3, 0.45, 0.3], [lx + 0.45, lg + y, lz - 0.05]);
@@ -238,7 +238,7 @@ export function createCage(cx = CAGE.x, cz = CAGE.z): Cage {
   for (const sx of [-1, 1]) {
     const x = cx + sx * (half - 2.5);
     const z = cz + half + 1.6;
-    const g = groundY(x, z);
+    const g = floorY(x, z);
     part(root, GEO.box, concrete, [0.9, 0.5, 0.9], [x, g + 0.1, z]);
     part(root, GEO.cyl, post, [0.12, 12.5, 0.12], [x, g + 6.25, z]);
     const head = group(root, [x, g + 12.3, z], [0, Math.atan2(cx - x, cz - z), 0]);
@@ -294,7 +294,7 @@ export function createCage(cx = CAGE.x, cz = CAGE.z): Cage {
 
   return {
     group: root,
-    center: new THREE.Vector3(cx, groundY(cx, cz), cz),
+    center: new THREE.Vector3(cx, floorY(cx, cz), cz),
     get open() {
       return sides.some((s) => s.open);
     },

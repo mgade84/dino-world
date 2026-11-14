@@ -36,7 +36,8 @@ export function mapThumb(m: MapDef): string {
   }
   for (const s of m.mesas) out.push(poly(pts(s), 'fill="#6b5a42"'));
   for (const s of m.lakes) out.push(poly(pts(s), 'fill="#2d6478" stroke="#a89a6a" stroke-width="1.5"'));
-  for (const r of m.roads) out.push(line(r.pts, `stroke="#7a6a52" stroke-width="${n(r.w)}"`));
+  for (const s of m.paving ?? []) out.push(poly(pts(s), 'fill="#4c4f4e"'));
+  for (const r of m.roads) out.push(line(r.pts, `stroke="${r.paved ? '#6f7372' : '#7a6a52'}" stroke-width="${n(r.w)}"`));
   for (const a of [m.town, m.power, m.docks]) out.push(rect(a.x, a.z, a.w, a.d, 'fill="#5a5f5c"'));
   for (const b of m.buildings) out.push(rect(b.x, b.z, b.w * 1.5, b.d * 1.5, 'fill="#c9b48a"'));
   for (const s of m.volcanoes) {
@@ -45,6 +46,12 @@ export function mapThumb(m: MapDef): string {
     const r = p.reduce((a, q) => a + Math.hypot(q[0] - c[0], q[1] - c[1]), 0) / p.length;
     out.push(poly(p, 'fill="#3a2f2b"'), `<circle cx="${n(c[0])}" cy="${n(c[1])}" r="${n(Math.max(2.5, r * 0.24))}" fill="#c8401e"/>`);
   }
+  if (m.ship) {
+    // The cargo ship: its hull, with the bow to the east (as SHIP_DIM in world.ts has it).
+    const { x, z } = m.ship;
+    out.push(poly([[x - 78, z - 16], [x + 56, z - 16], [x + 78, z], [x + 56, z + 16], [x - 78, z + 16]], 'fill="#1e2830" stroke="#d8d4c8" stroke-width="1"'));
+  }
+  for (const c of m.containers ?? []) out.push(rect(c.x, c.z, 9, 3.7, 'fill="#a0522d"'));
   for (const c of m.cars ?? []) out.push(`<circle cx="${n(c.x)}" cy="${n(c.z)}" r="2.2" fill="#f4b63a"/>`);
   for (const c of m.cages) out.push(rect(c.x, c.z, 14, 14, 'fill="none" stroke="#d8d8c8" stroke-width="1.5"'));
   out.push(rect(m.paddock.x, m.paddock.z, 14, 14, 'fill="none" stroke="#c8401e" stroke-width="2.5"'));

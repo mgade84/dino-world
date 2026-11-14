@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { setWind, treeGeometries, treeMaterial, treeTexture } from './trees';
 import { getMap, type MapDef } from './maps';
 import type { Hill, House, Road, Shape } from './maps/types';
@@ -70,6 +71,10 @@ export const MESAS: (Poly & { h: number })[] = [];
 export const HILLS: (Hill & { box: Box })[] = [];
 /** Roads along freehand paths. */
 export const ROADS: (Road & { box: Box })[] = [];
+/** Paved ground: concrete instead of grass, nothing growing. */
+export const PAVING: Poly[] = [];
+/** Where the coast is a quay wall instead of a beach. */
+export const QUAYS: Poly[] = [];
 /** The map's buildings (buildings.ts builds them). */
 export const HOUSES: House[] = [];
 /** The hero's paddock (park.ts builds its cage here). */
@@ -94,6 +99,24 @@ const COAST = { line: 103, strokes: [] as CoastStroke[], boxes: [] as Box[], gri
 const COAST_STEP = 2;
 /** The docks' pier, out over the sea: its centre line, start, end, width and deck height (level with the landing). */
 export const PIER = { x: 0, z0: 0, z1: 0, w: 4.4, deck: 0 };
+/** The map's cargo ship, if it has one: where its centre is (ship.ts draws it; shipFloor() is what you walk on). */
+export const SHIP = { on: false, x: 0, z: 0 };
+/**
+ * The cargo ship's layout, in world units from its centre: `u` along its length (x; the bow is at +u) and `v`
+ * across it (z; the quay side is -v). Heights are world y (the sea is at 0).
+ */
+export const SHIP_DIM = {
+  /** Half its length, half its beam, and how far back from the bow the hull starts to narrow to the stem. */
+  L: 78, B: 16, bow: 22,
+  /** Deck height, and the floor of the hold. */
+  D: 12, H: 3,
+  /** The open hold: from u0 to u1, v within ±hv. The ramp up out of it runs from rampU to u1, v within ±rampV. */
+  hold: { u0: -56, u1: 26, hv: 11 }, rampU: 2, rampV: 5,
+  /** The superstructure (bridge and cabins) over the stern, this long and this high above the deck. */
+  aft: 18, aftH: 16,
+  /** The gangway down onto the quay: centred on u, half its width, its length; bulwarks along the deck's edge. */
+  gang: { u: 38, hw: 5, len: 24 }, rail: 1.6, railH: 1.4,
+};
 const SITES = [TOWN, POWER, DOCKS];
 /** The levelled ground under each building (in world units, a little bigger than the building). */
 const PADS: Site[] = [];
@@ -130,6 +153,7 @@ export function useMap(map: MapDef) {
   while (shore < DOCKS.z + 150 && coastDist(DOCKS.x, shore) < 0) shore += 0.5;
   SHORE = shore;
   Object.assign(PIER, { x: DOCKS.x, z0: SHORE - 6, z1: SHORE + 21, deck: DOCKS.y });
+  Object.assign(SHIP, map.ship ? { on: true, x: map.ship.x, z: map.ship.z } : { on: false, x: 0, z: 0 });
   const fill = <T>(list: T[], items: T[]) => list.splice(0, list.length, ...items);
   fill(LAKES, map.lakes.map((l) => {
     const pts = outlineOf(l);
@@ -146,6 +170,12 @@ export function useMap(map: MapDef) {
   }));
   fill(HILLS, map.hills.map((h) => ({ ...h, pts: h.pts.map((p) => [p[0], p[1]] as Pt), box: boxOf(h.pts, h.w / 2) })));
   fill(ROADS, map.roads.map((r) => ({ ...r, pts: r.pts.map((p) => [p[0], p[1]] as Pt), box: boxOf(r.pts, r.w / 2) })));
+  const polys = (list: Shape[] | undefined) => (list ?? []).map((s) => {
+    const pts = outlineOf(s);
+    return { pts, box: boxOf(pts) };
+  });
+  fill(PAVING, polys(map.paving));
+  fill(QUAYS, polys(map.quays));
   fill(HOUSES, map.buildings.map((b) => ({ ...b })));
   fill(CAGE_SPOTS, map.cages.map((c) => ({ ...c, r: 13 })));
   fill(CAR_SPOTS, (map.cars ?? []).map((c) => ({ x: c.x, z: c.z, r: 6.5 })));
@@ -222,27 +252,117 @@ export function groundY(x: number, z: number): number {
     h = h + (-1.2 - h) * smooth(12, -3, dl);
   }
   for (const m of MESAS) if (outBox(m.box, x, z) < 1.6) h += m.h * smooth(1.6, -0.6, sdPoly(x, z, m.pts));
-  // A beach along every coast: the land eases down to just above the water.
+  // A beach along every coast: the land eases down to just above the water. Along a quay it doesn't: the
+  // ground runs level to the edge and drops straight into deep water.
   const cd = coastDist(x, z);
-  h += (0.6 - h) * smooth(-14, -3, cd);
+  const qa = quayAt(x, z);
+  h += (0.6 - h) * smooth(-14, -3, cd) * (1 - qa);
   // Main Street, the power station and the docks are levelled, easing back into the hills around them; so is the ground under each building.
   for (const site of SITES) h += (site.y - h) * smooth(12, 0, outside(site, x, z));
   for (const pad of PADS) {
     const o = outside(pad, x, z);
     if (o < 5) h += (pad.y - h) * smooth(5, 0, o);
   }
-  // Past the waterline, the sea floor.
-  h += (-3.5 - h) * smooth(-3, 8, cd);
+  // Past the waterline, the sea floor (deep right under a quay).
+  h += (-3.5 - h) * smooth(-3 + 2.6 * qa, 8 - 7 * qa, cd);
   return h;
+}
+
+/** 1 where the coast is a quay, 0 where it's a beach, blending over a few metres at the ends. */
+export function quayAt(x: number, z: number) {
+  let q = 0;
+  for (const p of QUAYS) if (outBox(p.box, x, z) < 4) q = Math.max(q, smooth(4, -4, sdPoly(x, z, p.pts)));
+  return q;
+}
+/** Whether a point is on paved ground (a city block, a square). */
+export function onPaving(x: number, z: number, pad = 0) {
+  return PAVING.some((p) => outBox(p.box, x, z) < pad && sdPoly(x, z, p.pts) < pad);
 }
 
 // Everything above is declared by now (useMap levels the building pads with groundY).
 useMap(MAP);
 
-/** What something walking stands on: the ground, or the pier's deck where that is higher. */
+/** What something walking stands on: the ground, or the pier's deck or the ship where that is higher. */
 export function floorY(x: number, z: number): number {
   const g = groundY(x, z);
-  return Math.abs(x - PIER.x) < PIER.w / 2 && z > PIER.z0 && z < PIER.z1 ? Math.max(g, PIER.deck) : g;
+  const f = Math.abs(x - PIER.x) < PIER.w / 2 && z > PIER.z0 && z < PIER.z1 ? Math.max(g, PIER.deck) : g;
+  return SHIP.on ? Math.max(f, shipFloor(x, z)) : f;
+}
+
+/**
+ * Keeps a body `r` across, its feet at p.y, out of the ship's walls: wherever within its reach the ship's floor
+ * stands more than `wall` above its feet (the hold's sides, the ramp's sides seen from the hold floor, bulwarks,
+ * the superstructure, the hull from the quay). shipFloor() is only ever asked about single
+ * points, so this feels round the edge of the body in a ring of directions, finds how far in the deepest wall
+ * reaches, and steps back out of it; a few rounds sort out corners.
+ */
+export function shipWalls(p: { x: number; y: number; z: number }, r: number, wall = 1) {
+  if (!SHIP.on) return;
+  const S = SHIP_DIM;
+  const u = p.x - SHIP.x;
+  const v = p.z - SHIP.z;
+  if (u < -S.L - r - 2 || u > S.L + r + 2 || v < -S.B - S.gang.len - r - 2 || v > S.B + r + 2) return;
+  const high = (x: number, z: number) => shipFloor(x, z) - p.y > wall;
+  for (let round = 0; round < 3; round++) {
+    let best = 0;
+    let bx = 0;
+    let bz = 0;
+    for (let k = 0; k < 16; k++) {
+      const a = (k / 16) * Math.PI * 2;
+      const dx = Math.cos(a);
+      const dz = Math.sin(a);
+      if (!high(p.x + dx * r, p.z + dz * r)) continue;
+      // Where the wall starts along this direction.
+      let lo = 0;
+      let hi = r;
+      for (let i = 0; i < 7; i++) {
+        const m = (lo + hi) / 2;
+        if (high(p.x + dx * m, p.z + dz * m)) hi = m;
+        else lo = m;
+      }
+      const push = r - hi;
+      if (push > best) {
+        best = push;
+        bx = dx;
+        bz = dz;
+      }
+    }
+    if (best <= 1e-3) return;
+    p.x -= bx * best;
+    p.z -= bz * best;
+  }
+}
+
+/**
+ * The cargo ship as something to walk on (-Infinity off it): its deck, the open hold sunk into it with a
+ * ramp up out of it, the gangway down to the quay, and, standing up off the deck too steeply to climb, its
+ * bulwarks and the superstructure. Its sides rise sheer out of the water, so the only way on
+ * or off is the gangway (or a fall into the sea). The fenders between it and the quay are level with the quay.
+ */
+export function shipFloor(x: number, z: number): number {
+  const S = SHIP_DIM;
+  const u = x - SHIP.x;
+  const v = z - SHIP.z;
+  if (Math.abs(u) > S.L + 1) return -Infinity;
+  const quay = () => groundY(SHIP.x + S.gang.u, SHIP.z - S.B - S.gang.len);
+  // The gangway: from the deck's edge down to the quay.
+  if (Math.abs(u - S.gang.u) <= S.gang.hw && v < -S.B + 0.5 && v >= -S.B - S.gang.len) {
+    const t = Math.min(1, (-S.B - v) / S.gang.len);
+    return S.D + (quay() - S.D) * Math.max(0, t);
+  }
+  // The fenders in the gap along the quay side: level with the quay, so nothing drops into it.
+  if (v < -S.B && v >= -S.B - 3 && Math.abs(u) <= S.L) return quay();
+  const beam = u > S.L - S.bow ? (S.B * (S.L - u)) / S.bow : S.B;
+  if (Math.abs(u) > S.L || Math.abs(v) > beam) return -Infinity;
+  if (u < -S.L + S.aft) return S.D + S.aftH;
+  const h = S.hold;
+  if (u >= h.u0 && u <= h.u1 && Math.abs(v) <= h.hv) {
+    if (u >= S.rampU && Math.abs(v) <= S.rampV) return S.H + ((S.D - S.H) * (u - S.rampU)) / (h.u1 - S.rampU);
+    return S.H;
+  }
+  // The bulwark round the edge, open where the gangway comes aboard.
+  if (beam - Math.abs(v) < S.rail && !(v < 0 && Math.abs(u - S.gang.u) <= S.gang.hw)) return S.D + S.railH;
+  return S.D;
 }
 
 /** Steepness (rise over run) at a point. */
@@ -386,6 +506,69 @@ function trackTextures() {
   return { map, rough };
 }
 
+/** Pavement width each side of a paved street, and how many metres one repeat of each street texture covers. */
+export const SIDEWALK = 3;
+const STREET = 12;
+
+/**
+ * A paved street, painted on canvases: wet asphalt, patched and darker in the wheel tracks, with a dashed
+ * centre line and a solid line near each kerb, kerbstones at the very edges (`road`, across the carriageway);
+ * and concrete paving slabs (`walk`, for the pavements and anything else the ribbon covers).
+ */
+function streetTextures() {
+  const r = rng(57);
+  const make = (w: number, h: number) => {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    return [c, c.getContext('2d')!] as const;
+  };
+  const [rc, g] = make(128, 256);
+  g.fillStyle = '#2b2d2e';
+  g.fillRect(0, 0, 128, 256);
+  for (let i = 0; i < 500; i++) {
+    const l = 0.8 + r() * 0.4;
+    g.fillStyle = `rgba(${Math.round(43 * l)},${Math.round(45 * l)},${Math.round(46 * l)},0.6)`;
+    g.fillRect(r() * 128, r() * 256, 2 + r() * 8, 2 + r() * 8);
+  }
+  // Repair patches and the darker, polished wheel tracks.
+  for (let i = 0; i < 4; i++) {
+    g.fillStyle = 'rgba(30,31,32,0.7)';
+    g.fillRect(10 + r() * 90, r() * 230, 14 + r() * 20, 10 + r() * 26);
+  }
+  for (const u of [0.2, 0.38, 0.62, 0.8]) {
+    g.fillStyle = 'rgba(20,21,22,0.35)';
+    g.fillRect(u * 128 - 6, 0, 12, 256);
+  }
+  // Kerbs, lines.
+  g.fillStyle = '#77756f';
+  g.fillRect(0, 0, 5, 256);
+  g.fillRect(123, 0, 5, 256);
+  g.fillStyle = 'rgba(200,196,182,0.75)';
+  g.fillRect(9, 0, 2, 256);
+  g.fillRect(117, 0, 2, 256);
+  g.fillStyle = 'rgba(214,176,70,0.8)';
+  for (let y = 0; y < 256; y += 64) g.fillRect(62, y + 8, 4, 36);
+  const [wc, h] = make(64, 64);
+  h.fillStyle = '#6c6962';
+  h.fillRect(0, 0, 64, 64);
+  for (let y = 0; y < 64; y += 16) for (let x = 0; x < 64; x += 16) {
+    const l = 0.88 + r() * 0.2;
+    h.fillStyle = `rgb(${Math.round(108 * l)},${Math.round(105 * l)},${Math.round(98 * l)})`;
+    h.fillRect(x + 1, y + 1, 14, 14);
+  }
+  const road = new THREE.CanvasTexture(rc);
+  const walk = new THREE.CanvasTexture(wc);
+  for (const t of [road, walk]) {
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.wrapS = THREE.RepeatWrapping;
+    t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = 4;
+  }
+  road.wrapS = THREE.ClampToEdgeWrapping;
+  return { road, walk };
+}
+
 export function buildWorld(): World {
   const rand = rng(MAP.seed);
   const group = new THREE.Group();
@@ -434,6 +617,7 @@ export function buildWorld(): World {
     if (PADS.some((pad) => outside(pad, x, z) < 2 + clear)) return true;
     if (ROADS.some((r) => outBox(r.box, x, z) < 1.5 + clear && toPath(x, z, r.pts) < r.w / 2 + 1.5 + clear)) return true;
     if (coastDist(x, z) > -7 - clear) return true; // the sea and the beach
+    if (onPaving(x, z, clear)) return true;
     if (FENCE_LINES.some((l) => toLine(x, z, l) < 3 + clear)) return true;
     let hit = false;
     near(x, z, (c) => {
@@ -454,6 +638,9 @@ export function buildWorld(): World {
   const dirt = new THREE.Color('#4f4232');
   const sand = new THREE.Color('#7d7058');
   const rock = new THREE.Color('#544a40');
+  const concreteA = new THREE.Color('#5f5c57');
+  const concreteB = new THREE.Color('#4d4b47');
+  const quayWall = new THREE.Color('#3b3a37');
   const tmp = new THREE.Color();
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);
@@ -464,11 +651,18 @@ export function buildWorld(): World {
     if (d > 0.55) tmp.lerp(dirt, THREE.MathUtils.clamp((d - 0.55) * 4, 0, 0.8));
     const lake = lakeEdge(x, z, 6);
     if (lake < 6) tmp.lerp(sand, THREE.MathUtils.clamp(1 - lake / 6, 0, 1));
-    // Sand along the coast.
-    tmp.lerp(sand, smooth(-11, -5, coastDist(x, z)));
-    // Muddy verges along the roads.
+    // Sand along the coast; along a quay, its concrete edge and the dark wall below it.
+    const qa = quayAt(x, z);
+    tmp.lerp(sand, smooth(-11, -5, coastDist(x, z)) * (1 - qa));
+    // Paved ground: wet concrete, a little patchy.
+    let paved = 0;
+    for (const p of PAVING) if (outBox(p.box, x, z) < 1.5) paved = Math.max(paved, smooth(1.5, -0.5, sdPoly(x, z, p.pts)));
+    if (qa > 0) paved = Math.max(paved, qa * smooth(-6, -2, coastDist(x, z)));
+    if (paved > 0) tmp.lerp(concreteA, paved).lerp(concreteB, paved * THREE.MathUtils.clamp(n * 0.4 + 0.3, 0, 1));
+    if (qa > 0) tmp.lerp(quayWall, qa * smooth(-1.5, 0.5, coastDist(x, z)));
+    // Muddy verges along the dirt roads.
     for (const r of ROADS) {
-      if (outBox(r.box, x, z) > 3) continue;
+      if (r.paved || outBox(r.box, x, z) > 3) continue;
       const dr = toPath(x, z, r.pts) - r.w / 2;
       if (dr < 3) tmp.lerp(dirt, 0.5 * smooth(3, 0, dr));
     }
@@ -500,15 +694,75 @@ export function buildWorld(): World {
   const stripe = keep(new THREE.MeshBasicMaterial({ color: '#8a8470' }));
   for (let k = -5; k <= 5; k++) slab(2.2, 0.18, stripe, TOWN.x + k * 5, TOWN.z, TOWN.y + 0.08);
 
-  // ---- Roads: dirt tracks, a ribbon draped over the ground along each path ----
-  const track = ROADS.length ? trackTextures() : null;
+  // ---- Roads: dirt tracks, or paved streets, a ribbon draped over the ground along each path ----
+  const track = ROADS.some((r) => !r.paved) ? trackTextures() : null;
   const roadMat = track
     ? keep(new THREE.MeshStandardMaterial({
         map: keep(track.map), roughnessMap: keep(track.rough), roughness: 1, metalness: 0,
         transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4, side: THREE.DoubleSide,
       }))
     : null;
+  /** A ribbon `w` wide along `line`, `lift` above the ground, its v running `rep` metres per repeat. */
+  function ribbon(line: Pt[], w: number, lift: number, rep: number, across = 6, uRep = 1) {
+    const verts: number[] = [];
+    const uvs: number[] = [];
+    const index: number[] = [];
+    let along = 0;
+    line.forEach(([x, z], i) => {
+      if (i) along += Math.hypot(x - line[i - 1][0], z - line[i - 1][1]);
+      const [ax, az] = line[Math.max(0, i - 1)];
+      const [bx, bz] = line[Math.min(line.length - 1, i + 1)];
+      const len = Math.hypot(bx - ax, bz - az) || 1;
+      const nx = -(bz - az) / len;
+      const nz = (bx - ax) / len;
+      for (let j = 0; j <= across; j++) {
+        const o = (j / across - 0.5) * w;
+        const px = x + nx * o;
+        const pz = z + nz * o;
+        verts.push(px, groundY(px, pz) + lift, pz);
+        uvs.push((j / across) * uRep, along / rep);
+        if (i && j) {
+          const a = (i - 1) * (across + 1) + j - 1;
+          const b = i * (across + 1) + j - 1;
+          index.push(a, b, a + 1, b, b + 1, a + 1);
+        }
+      }
+    });
+    const geo = keep(new THREE.BufferGeometry());
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geo.setIndex(index);
+    geo.computeVertexNormals();
+    return geo;
+  }
+  // Paved streets: a pavement ribbon the full width, then the asphalt over it (and over the pavements of
+  // the streets it crosses), all merged into one mesh each.
+  const paved = ROADS.filter((r) => r.paved);
+  if (paved.length) {
+    const tex = streetTextures();
+    const flat = { polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4, side: THREE.DoubleSide };
+    const walkMat = keep(new THREE.MeshStandardMaterial({ map: keep(tex.walk), roughness: 0.75, ...flat }));
+    const roadTop = keep(new THREE.MeshStandardMaterial({ map: keep(tex.road), roughness: 0.3, metalness: 0.1, ...flat, polygonOffsetFactor: -3, polygonOffsetUnits: -6 }));
+    const walks: THREE.BufferGeometry[] = [];
+    const tops: THREE.BufferGeometry[] = [];
+    for (const road of paved) {
+      const line = resample(road.pts, 3);
+      if (line.length < 2) continue;
+      walks.push(ribbon(line, road.w, 0.1, SIDEWALK, 2, road.w / SIDEWALK));
+      tops.push(ribbon(line, road.w - SIDEWALK * 2, 0.12, STREET, 4));
+    }
+    for (const [list, m, order] of [[walks, walkMat, 1], [tops, roadTop, 2]] as const) {
+      if (!list.length) continue;
+      const geo = keep(mergeGeometries(list as THREE.BufferGeometry[])!);
+      const mesh = new THREE.Mesh(geo, m);
+      mesh.receiveShadow = true;
+      mesh.renderOrder = order;
+      mesh.userData.noFade = true;
+      group.add(mesh);
+    }
+  }
   for (const road of ROADS) {
+    if (road.paved) continue;
     const line = resample(road.pts, 1.5);
     if (!roadMat || line.length < 2) continue;
     // A bit wider than the road itself, for the edges to fade out over.
